@@ -21,7 +21,7 @@ HYBRID_CANDIDATES = 10      # candidates from each source
 VECTOR_WEIGHT = 0.6
 BM25_WEIGHT = 0.4
 RERANK_TOP_N = 3
-NOT_FOUND_THRESHOLD = -8.0  # cross-encoder score below this → "not found"
+NOT_FOUND_THRESHOLD = -12.0  # cross-encoder score below this → "not found"
 
 _reranker: CrossEncoder | None = None
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"

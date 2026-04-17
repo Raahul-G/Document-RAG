@@ -1,4 +1,5 @@
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,6 +10,8 @@ from backend.models import Session as ChatSession
 from backend.schemas import CitationSource, QueryIn, QueryOut
 from backend.services import generation, retrieval
 from backend.services.retrieval import NOT_FOUND_THRESHOLD
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -36,6 +39,8 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
         query=payload.question,
         doc_ids=payload.doc_filter or None,
     )
+
+    logger.info("Query: %r | top_score=%.2f | chunks=%d", payload.question, top_score, len(chunks))
 
     # 2. Threshold gate — don't call Gemini if nothing relevant found
     if not chunks or top_score < NOT_FOUND_THRESHOLD:
