@@ -27,7 +27,7 @@ from docx import Document as DocxDocument
 from sqlalchemy.orm import Session
 
 from backend.models import Chunk, Document
-from backend.services import bm25_index, embeddings, vectorstore
+from backend.services import bm25_index, embeddings, progress as prog, vectorstore
 
 # Chunking config
 MAX_CHUNK_CHARS = 1500
@@ -225,26 +225,30 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         db.commit()
 
         # 1. Parse
+        prog.update(doc_id, "parsing", f"Parsing {doc.file_type.upper()}...")
         elements = _parse(file_path, doc.file_type)
 
-        # Update page count
         pages = {el["page"] for el in elements}
         doc.page_count = max(pages) if pages else 0
         db.commit()
 
         # 2. Chunk
+        prog.update(doc_id, "chunking", f"Chunking {len(elements)} elements into sections...")
         chunk_records = _chunk(elements, doc_id, doc.original_name)
 
         if not chunk_records:
             doc.status = "indexed"
             db.commit()
+            prog.update(doc_id, "done", "Indexed — no content extracted.", done=True)
             return 0
 
-        # 3. Embed (local, nomic-embed-text)
+        # 3. Embed
+        prog.update(doc_id, "embedding", f"Embedding {len(chunk_records)} chunks (first run downloads model)...")
         texts = [c["text"] for c in chunk_records]
         vectors = embeddings.embed_documents(texts)
 
         # 4a. Store in ChromaDB
+        prog.update(doc_id, "storing", "Storing in vector database...")
         vectorstore.add_chunks(chunk_records, vectors)
 
         # 4b. Store chunk metadata in SQLite
@@ -263,13 +267,15 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         doc.status = "indexed"
         db.commit()
 
-        # 5. Rebuild BM25 index to include new chunks
+        # 5. Rebuild BM25 index
         all_chunks = vectorstore.get_all_chunks()
         bm25_index.build_index(all_chunks)
 
+        prog.update(doc_id, "done", f"Indexed — {len(chunk_records)} chunks ready.", done=True)
         return len(chunk_records)
 
     except Exception as e:
         doc.status = "failed"
         db.commit()
+        prog.update(doc_id, "failed", str(e), done=True, error=str(e))
         raise e

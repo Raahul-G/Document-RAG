@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
+import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -10,6 +13,7 @@ from backend.database import get_db
 from backend.models import Document
 from backend.schemas import DocumentListOut, DocumentOut
 from backend.services import ingestion, vectorstore
+from backend.services import progress as prog
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -64,7 +68,7 @@ async def upload_document(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=409,
-            detail=f"Document already exists: '{existing.original_name}' (uploaded {existing.created_at.date()})",
+            detail=f"Already uploaded: '{existing.original_name}' (added {existing.created_at.strftime('%b %d, %Y')})",
         )
 
     # Rename to final path using hash prefix to avoid collisions
@@ -89,6 +93,29 @@ async def upload_document(
     return doc
 
 
+@router.get("/{document_id}/progress")
+async def get_progress(document_id: int):
+    """SSE stream: emits ingestion stage updates until done or failed (max 5 min)."""
+
+    async def stream():
+        for _ in range(600):  # 5 minutes max @ 0.5s intervals
+            entry = prog.get(document_id)
+            if entry:
+                yield f"data: {json.dumps(entry)}\n\n"
+                if entry.get("done") or entry.get("error"):
+                    prog.clear(document_id)
+                    break
+            else:
+                yield f"data: {json.dumps({'stage': 'waiting', 'message': 'Queued...', 'done': False, 'error': None})}\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("", response_model=DocumentListOut)
 def list_documents(db: Session = Depends(get_db)):
     docs = db.query(Document).order_by(Document.created_at.desc()).all()
@@ -109,18 +136,14 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Remove from ChromaDB
     vectorstore.delete_document_chunks(document_id)
 
-    # Remove file from disk
     file_path = Path(settings.upload_dir) / doc.filename
     file_path.unlink(missing_ok=True)
 
-    # Remove from DB (cascades to chunks)
     db.delete(doc)
     db.commit()
 
-    # Rebuild BM25
     from backend.services import bm25_index
     all_chunks = vectorstore.get_all_chunks()
     bm25_index.build_index(all_chunks)
