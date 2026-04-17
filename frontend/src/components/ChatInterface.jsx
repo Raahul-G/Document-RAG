@@ -48,37 +48,84 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
     setQuestion("")
     setMessages(prev => [...prev, { type: "question", text: q }])
     setLoading(true)
+
+    // Insert a streaming placeholder immediately so the user sees the bubble appear
+    setMessages(prev => [...prev, { type: "answer", text: "", sources: [], found: true, streaming: true }])
+
     try {
-      const res = await fetch("/api/query", {
+      const res = await fetch("/api/query/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q, session_id: currentSessionId ?? null }),
       })
-      if (res.status === 503) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail ?? "The AI service is temporarily unavailable.")
-      }
       if (!res.ok) throw new Error(`Request failed (${res.status})`)
-      const data = await res.json()
-      if (!currentSessionId && data.session_id) {
-        setCurrentSessionId(data.session_id)
-        onSessionCreated?.()
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+
+        // SSE lines come in as "data: {...}\n\n"
+        const lines = buf.split("\n")
+        buf = lines.pop() // keep partial line for next chunk
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue
+          const raw = line.slice(6).trim()
+          if (!raw) continue
+          let event
+          try { event = JSON.parse(raw) } catch { continue }
+
+          if (event.type === "token") {
+            // Append token to the streaming placeholder
+            setMessages(prev => {
+              const msgs = [...prev]
+              const last = msgs[msgs.length - 1]
+              if (last?.type === "answer" && last.streaming)
+                msgs[msgs.length - 1] = { ...last, text: last.text + event.text }
+              return msgs
+            })
+          } else if (event.type === "done") {
+            if (!currentSessionId && event.session_id) {
+              setCurrentSessionId(event.session_id)
+              onSessionCreated?.()
+            }
+            const sources = event.sources ?? []
+            if (sources.length > 0) setActiveSources(sources)
+            setMessages(prev => {
+              const msgs = [...prev]
+              const last = msgs[msgs.length - 1]
+              if (last?.type === "answer" && last.streaming)
+                msgs[msgs.length - 1] = {
+                  type: "answer",
+                  text: event.found
+                    ? (last.text || event.answer)
+                    : "I could not find an answer to this question in the uploaded documents.",
+                  sources,
+                  found: event.found,
+                  streaming: false,
+                }
+              return msgs
+            })
+          } else if (event.type === "error") {
+            throw new Error(event.message || "The AI service is temporarily unavailable.")
+          }
+        }
       }
-      const sources = data.sources ?? []
-      if (sources.length > 0) setActiveSources(sources)
-      setMessages(prev => [...prev, {
-        type: "answer",
-        text: data.found ? data.answer : "I could not find an answer to this question in the uploaded documents.",
-        sources,
-        found: data.found,
-      }])
     } catch (err) {
-      setMessages(prev => [...prev, {
-        type: "answer",
-        text: err.message || "Something went wrong. Please try again.",
-        sources: [],
-        found: false,
-      }])
+      setMessages(prev => {
+        const msgs = [...prev]
+        const last = msgs[msgs.length - 1]
+        if (last?.type === "answer" && last.streaming)
+          msgs[msgs.length - 1] = { type: "answer", text: err.message || "Something went wrong. Please try again.", sources: [], found: false, streaming: false }
+        else
+          msgs.push({ type: "answer", text: err.message || "Something went wrong. Please try again.", sources: [], found: false })
+        return msgs
+      })
     } finally {
       setLoading(false)
     }
@@ -186,7 +233,13 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                       className="p-5 rounded-xl text-sm leading-relaxed border shadow-sm"
                       style={{ background: "#f2f4f6", borderColor: "rgba(226,232,240,0.5)", color: "#191c1e" }}
                     >
-                      {msg.text}
+                      {msg.text || (msg.streaming ? "" : "—")}
+                      {msg.streaming && (
+                        <span
+                          className="inline-block w-0.5 h-3.5 ml-0.5 align-middle animate-pulse"
+                          style={{ background: C.primary }}
+                        />
+                      )}
                     </div>
                     {/* Inline citation pills */}
                     {msg.sources?.length > 0 && (
@@ -217,8 +270,8 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
               </div>
             ))}
 
-            {/* Typing indicator */}
-            {loading && (
+            {/* Typing indicator — shown only before first token arrives */}
+            {loading && !messages.some(m => m.streaming && m.text) && (
               <div className="flex flex-col gap-2 max-w-2xl">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded flex items-center justify-center text-white shrink-0" style={{ background: C.primary }}>

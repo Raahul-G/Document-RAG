@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _client: genai.Client | None = None
 GEMINI_MODEL = "gemini-2.5-flash"
 
+# ── Non-streaming prompt (structured JSON) ────────────────────────────────────
 SYSTEM_PROMPT = """You are a precise document analysis assistant.
 
 Your ONLY job is to answer questions using the document passages provided to you.
@@ -49,6 +50,18 @@ Response schema (return exactly this structure):
     }
   ]
 }"""
+
+
+# ── Streaming prompt (plain text answer) ─────────────────────────────────────
+STREAM_SYSTEM_PROMPT = """You are a precise document analysis assistant.
+
+Answer questions using ONLY the document passages provided. No external knowledge.
+You MAY use conversation history to understand follow-up questions, but answer from passages only.
+
+OUTPUT RULES — follow exactly:
+- Write your answer in plain text. No JSON, no markdown, no bullet points unless natural.
+- If the answer is NOT in the passages, reply with ONLY the word: NOT_FOUND
+- Do not explain why you cannot answer. Just: NOT_FOUND"""
 
 
 def _get_client() -> genai.Client:
@@ -136,4 +149,85 @@ def generate_answer(
 
     except Exception as e:
         logger.error("Gemini generation error: %s", e)
+        raise RuntimeError(f"LLM error: {e}") from e
+
+
+# ── Streaming ─────────────────────────────────────────────────────────────────
+
+_NOT_FOUND_SENTINEL = "NOT_FOUND"
+_SENTINEL_LEN = len(_NOT_FOUND_SENTINEL)
+
+
+def stream_answer(
+    question: str,
+    chunks: list[dict],
+    history: list[dict] | None = None,
+) -> "Generator[dict, None, None]":
+    """
+    Sync generator for streaming answers token by token.
+
+    Yields:
+        {"type": "token", "text": str}   — answer text fragments (skipped if NOT_FOUND)
+        {"type": "done",  "found": bool} — final sentinel with found status
+
+    The caller is responsible for building sources from retrieved chunks.
+    Raises RuntimeError on Gemini API failure.
+    """
+    from typing import Generator  # local import avoids circular issues
+
+    client = _get_client()
+
+    parts: list[str] = []
+    if history:
+        parts.append(_build_history_block(history))
+    parts.append(_build_context(chunks))
+    parts.append(f"QUESTION: {question}")
+    prompt = "\n\n".join(parts)
+
+    try:
+        raw_stream = client.models.generate_content_stream(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=STREAM_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_output_tokens=2048,
+            ),
+        )
+
+        buffer = ""
+        yielded_any = False
+
+        for raw in raw_stream:
+            if not raw.text:
+                continue
+            buffer += raw.text
+
+            # Hold back enough chars to detect the NOT_FOUND sentinel at any split point.
+            # Safe portion: everything except the last SENTINEL_LEN chars.
+            if len(buffer) > _SENTINEL_LEN:
+                safe, buffer = buffer[:-_SENTINEL_LEN], buffer[-_SENTINEL_LEN:]
+                if safe:
+                    yielded_any = True
+                    yield {"type": "token", "text": safe}
+
+        # Flush remaining buffer after stream ends
+        if buffer:
+            if buffer.strip() == _NOT_FOUND_SENTINEL:
+                # Gemini said not found — discard, found stays False
+                pass
+            else:
+                yielded_any = True
+                yield {"type": "token", "text": buffer}
+
+        found = yielded_any
+        logger.info("Stream done — found=%s", found)
+        yield {"type": "done", "found": found}
+
+    except genai_errors.ClientError as e:
+        logger.error("Gemini stream client error: %s", e)
+        raise RuntimeError(f"LLM unavailable: {e}") from e
+
+    except Exception as e:
+        logger.error("Gemini stream error: %s", e)
         raise RuntimeError(f"LLM error: {e}") from e

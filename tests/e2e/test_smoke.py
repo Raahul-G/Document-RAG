@@ -13,6 +13,7 @@ Tests (in order):
   6. Query after upload — retrieval pipeline runs, Gemini called (may return found:false if quota)
   7. Conversational follow-up — second query in same session includes history
   8. Session persistence — session contains both messages
+  9. Streaming — /query/stream returns SSE content-type and done event
   9. Session delete — cleans up
 """
 from __future__ import annotations
@@ -198,3 +199,71 @@ def test_delete_session(client, first_query_session_id):
     # Verify it's gone
     r2 = client.get(f"/sessions/{session_id}")
     assert r2.status_code == 404
+
+
+# ── 9. Streaming endpoint ─────────────────────────────────────────────────────
+
+def _parse_sse(raw: str) -> list[dict]:
+    """Parse SSE response body into a list of event dicts."""
+    import json
+    events = []
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            try:
+                events.append(json.loads(line[6:]))
+            except json.JSONDecodeError:
+                pass
+    return events
+
+
+def test_stream_endpoint_content_type(client):
+    """Streaming endpoint must return text/event-stream."""
+    with client.stream("POST", "/query/stream",
+                       json={"question": "Hello, what is in the document?"},
+                       headers={"Accept": "text/event-stream"}) as r:
+        assert "text/event-stream" in r.headers.get("content-type", "")
+
+
+def test_stream_endpoint_has_done_event(client, uploaded_doc_id):
+    """Streaming response must end with a 'done' event containing session_id."""
+    with client.stream("POST", "/query/stream",
+                       json={"question": "What text appears in this document?",
+                             "doc_filter": [uploaded_doc_id]}) as r:
+        if r.status_code == 503:
+            pytest.skip("Gemini quota exhausted")
+        assert r.status_code == 200
+        body = r.read().decode()
+
+    events = _parse_sse(body)
+    assert events, "No SSE events received"
+
+    done_events = [e for e in events if e.get("type") == "done"]
+    assert done_events, "No 'done' event in stream"
+    done = done_events[-1]
+    assert "found" in done
+    assert "session_id" in done
+    assert isinstance(done["session_id"], int)
+
+    # Clean up the session created by this test
+    if done.get("session_id"):
+        client.delete(f"/sessions/{done['session_id']}")
+
+
+def test_stream_token_events_are_strings(client, uploaded_doc_id):
+    """All token events must have string text fields."""
+    with client.stream("POST", "/query/stream",
+                       json={"question": "Describe the document.",
+                             "doc_filter": [uploaded_doc_id]}) as r:
+        if r.status_code == 503:
+            pytest.skip("Gemini quota exhausted")
+        body = r.read().decode()
+
+    events = _parse_sse(body)
+    token_events = [e for e in events if e.get("type") == "token"]
+    for e in token_events:
+        assert isinstance(e["text"], str)
+
+    if token_events:
+        done = next((e for e in events if e.get("type") == "done"), None)
+        if done and done.get("session_id"):
+            client.delete(f"/sessions/{done['session_id']}")

@@ -2,9 +2,10 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from backend.database import get_db
+from backend.database import SessionLocal, get_db
 from backend.models import Message
 from backend.models import Session as ChatSession
 from backend.schemas import CitationSource, QueryIn, QueryOut
@@ -102,4 +103,119 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
         found=result["found"],
         sources=sources,
         session_id=session.id,
+    )
+
+
+# ── Streaming endpoint ────────────────────────────────────────────────────────
+
+def _chunk_to_source(c: dict) -> dict:
+    meta = c["metadata"]
+    return {
+        "doc_name": meta["doc_name"],
+        "page": meta["page_number"],
+        "passage_index": meta["passage_index"],
+        "section_title": meta.get("section_title", ""),
+        "text": c["text"],
+    }
+
+
+@router.post("/stream")
+def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
+    """
+    SSE streaming endpoint.
+
+    Events (newline-delimited JSON after 'data: '):
+      {"type": "token",  "text": str}
+      {"type": "done",   "found": bool, "answer": str, "sources": [...], "session_id": int}
+      {"type": "error",  "message": str}
+    """
+    # 1. Retrieve — must happen before generator starts (uses injected db)
+    chunks, coverage_ok = retrieval.retrieve(
+        query=payload.question,
+        doc_ids=payload.doc_filter or None,
+    )
+
+    # 2. Gate 1 — short-circuit before streaming
+    if not coverage_ok:
+        session = _get_or_create_session(payload.session_id, payload.question, db)
+        db.add(Message(session_id=session.id, question=payload.question,
+                       answer="", sources_json="[]"))
+        db.commit()
+        not_found_msg = "I could not find an answer to this question in the uploaded documents."
+
+        def _not_found():
+            yield (
+                f'data: {json.dumps({"type": "done", "found": False, "answer": not_found_msg,'
+                f' "sources": [], "session_id": session.id})}\n\n'
+            )
+
+        return StreamingResponse(_not_found(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # 3. Load history (using injected db — safe here, before generator is returned)
+    history: list[dict] = []
+    if payload.session_id:
+        recent = (
+            db.query(Message)
+            .filter(Message.session_id == payload.session_id)
+            .order_by(Message.created_at.desc())
+            .limit(HISTORY_WINDOW)
+            .all()
+        )
+        history = [
+            {"question": m.question, "answer": m.answer}
+            for m in reversed(recent)
+            if m.answer
+        ]
+
+    # 4. Pre-create / resolve session while injected db is still reliable
+    chat_session = _get_or_create_session(payload.session_id, payload.question, db)
+    session_id = chat_session.id
+    question = payload.question
+
+    # Top chunks as candidate sources (streaming mode — no per-passage citation from Gemini)
+    candidate_sources = [_chunk_to_source(c) for c in chunks[:3]]
+
+    def event_stream():
+        answer_parts: list[str] = []
+        found = False
+
+        try:
+            for event in generation.stream_answer(question, chunks, history or None):
+                if event["type"] == "token":
+                    answer_parts.append(event["text"])
+                    yield f'data: {json.dumps({"type": "token", "text": event["text"]})}\n\n'
+                elif event["type"] == "done":
+                    found = event["found"]
+        except RuntimeError as e:
+            yield f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
+            return
+
+        full_answer = "".join(answer_parts) if found else ""
+        sources_data = candidate_sources if found else []
+
+        # Save to DB using a fresh session (injected session may be closed by now)
+        db_write = SessionLocal()
+        try:
+            db_write.add(Message(
+                session_id=session_id,
+                question=question,
+                answer=full_answer,
+                sources_json=json.dumps(sources_data),
+            ))
+            db_write.commit()
+        except Exception as exc:
+            logger.error("Failed to persist streamed message: %s", exc)
+        finally:
+            db_write.close()
+
+        yield (
+            f'data: {json.dumps({"type": "done", "found": found, "answer": full_answer,'
+            f' "sources": sources_data, "session_id": session_id})}\n\n'
+        )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
