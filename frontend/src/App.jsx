@@ -58,80 +58,8 @@ export default function App() {
       {/* Right of sidebar */}
       <div className="flex flex-col flex-1 min-w-0" style={{ marginLeft: "16rem" }}>
 
-        {/* ── Top header ── */}
-        <header
-          className="fixed top-0 right-0 h-16 flex items-center justify-between px-8 z-40"
-          style={{
-            left: "16rem",
-            background: "rgba(255,255,255,0.85)",
-            backdropFilter: "blur(12px)",
-            borderBottom: "1px solid rgba(226,232,240,0.6)",
-          }}
-        >
-          {/* Context tabs */}
-          <nav className="flex items-center gap-6 h-full">
-            {[["chat", "Research Chat"], ["upload", "Knowledge Ingestion"]].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setView(key)}
-                className="h-full text-sm font-semibold border-b-2 transition-colors"
-                style={{
-                  borderColor: view === key ? C.primary : "transparent",
-                  color: view === key ? C.primary : "#94a3b8",
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-
-          {/* Right actions */}
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <span
-                className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2"
-                style={{ fontSize: "18px", color: "#94a3b8" }}
-              >
-                search
-              </span>
-              <input
-                type="text"
-                placeholder="Search knowledge base..."
-                className="rounded-lg py-2 pl-9 pr-4 text-sm w-56 outline-none transition-all"
-                style={{ background: "#f1f5f9", color: "#334155" }}
-                onFocus={e => e.currentTarget.style.boxShadow = `0 0 0 2px ${C.primary}33`}
-                onBlur={e => e.currentTarget.style.boxShadow = "none"}
-              />
-            </div>
-            <button
-              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors"
-              style={{ color: "#94a3b8" }}
-              onMouseEnter={e => e.currentTarget.style.color = C.primary}
-              onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: "22px" }}>notifications</span>
-            </button>
-            <button
-              className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors"
-              style={{ color: "#94a3b8" }}
-              onMouseEnter={e => e.currentTarget.style.color = C.primary}
-              onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: "22px" }}>help_outline</span>
-            </button>
-            <button
-              onClick={() => setView("upload")}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold text-white transition-all hover:opacity-90 active:scale-[0.98]"
-              style={{ background: `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>upload</span>
-              Upload
-            </button>
-          </div>
-        </header>
-
         {/* ── Page content ── */}
-        <div className="flex-1 overflow-hidden" style={{ paddingTop: "4rem" }}>
+        <div className="flex-1 overflow-hidden">
 
           {/* Chat */}
           {view === "chat" && (

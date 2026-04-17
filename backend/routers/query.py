@@ -9,7 +9,6 @@ from backend.models import Message
 from backend.models import Session as ChatSession
 from backend.schemas import CitationSource, QueryIn, QueryOut
 from backend.services import generation, retrieval
-from backend.services.retrieval import NOT_FOUND_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +33,14 @@ def _get_or_create_session(session_id: int | None, question: str, db: Session) -
 
 @router.post("", response_model=QueryOut)
 def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
-    # 1. Retrieve — hybrid search + rerank
-    chunks, top_score = retrieval.retrieve(
+    # 1. Retrieve — hybrid search + soft reranking
+    chunks, coverage_ok = retrieval.retrieve(
         query=payload.question,
         doc_ids=payload.doc_filter or None,
     )
 
-    logger.info("Query: %r | top_score=%.2f | chunks=%d", payload.question, top_score, len(chunks))
-
-    # 2. Threshold gate — don't call Gemini if nothing relevant found
-    if not chunks or top_score < NOT_FOUND_THRESHOLD:
+    # 2. Gate 1: coverage check (retrieval signals, not cross-encoder score)
+    if not coverage_ok:
         session = _get_or_create_session(payload.session_id, payload.question, db)
         msg = Message(
             session_id=session.id,
@@ -61,6 +58,7 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
         )
 
     # 3. Generate answer via Gemini
+    #    Gate 2: Gemini self-checks via found:false — it decides if chunks answer the question
     try:
         result = generation.generate_answer(payload.question, chunks)
     except RuntimeError as e:

@@ -1,30 +1,48 @@
 """
-Hybrid retrieval pipeline: BM25 keyword + ChromaDB vector → merge → cross-encoder rerank.
+Hybrid retrieval pipeline: BM25 keyword + ChromaDB vector → merge → soft rerank.
 
 Flow:
   1. Embed query with nomic-embed-text
-  2. Vector search (ChromaDB, top 10)
-  3. Keyword search (BM25, top 10)
+  2. Vector search (ChromaDB, top 15)
+  3. BM25 keyword search (top 15)
   4. Merge + deduplicate by (doc_id, page, passage_index)
-  5. Cross-encoder rerank → top 3
-  6. Threshold gate: if best score < threshold → "not found"
+  5. Gate 1 (coverage check) — reject only if retrieval is genuinely empty/weak
+  6. Cross-encoder scoring → sigmoid probabilities (no hard threshold, ranking only)
+  7. Fallback — if all CE probs < 0.1, bypass reranker and use raw retrieval order
+  8. Combined score = 0.5 * vector_sim + 0.3 * bm25_norm + 0.2 * ce_prob
+  9. Return top MIN_CHUNKS_TO_LLM chunks — never collapse LLM context
+  Gate 2 (found:false) lives in Gemini — it decides if chunks answer the question.
 """
 from __future__ import annotations
+
+import logging
+import math
 
 from sentence_transformers import CrossEncoder
 
 from backend.services import bm25_index, vectorstore
 from backend.services.embeddings import embed_query
 
-# Tuning knobs
-HYBRID_CANDIDATES = 10      # candidates from each source
-VECTOR_WEIGHT = 0.6
-BM25_WEIGHT = 0.4
-RERANK_TOP_N = 3
-NOT_FOUND_THRESHOLD = -12.0  # cross-encoder score below this → "not found"
+logger = logging.getLogger(__name__)
+
+# ── Tuning knobs ──────────────────────────────────────────────────────────────
+HYBRID_CANDIDATES = 15          # candidates from each source (higher = better recall)
+MIN_CHUNKS_TO_LLM = 5           # minimum chunks always passed to LLM
+VECTOR_WEIGHT = 0.5
+BM25_WEIGHT = 0.3
+CE_WEIGHT = 0.2
+
+# Gate 1 thresholds (retrieval coverage signals, NOT cross-encoder logits)
+COVERAGE_VECTOR_MIN = 0.25      # min top-1 vector similarity to pass Gate 1
+FALLBACK_CE_PROB_MIN = 0.10     # if max CE prob below this → bypass reranker entirely
 
 _reranker: CrossEncoder | None = None
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def _sigmoid(x: float) -> float:
+    """Convert a raw cross-encoder logit to a [0, 1] probability."""
+    return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, x))))
 
 
 def _get_reranker() -> CrossEncoder:
@@ -40,16 +58,15 @@ def _chunk_key(meta: dict) -> str:
 
 def retrieve(
     query: str,
-    n_results: int = RERANK_TOP_N,
     doc_ids: list[int] | None = None,
-) -> tuple[list[dict], float]:
+) -> tuple[list[dict], bool]:
     """
-    Run hybrid retrieval + reranking.
+    Run hybrid retrieval with soft reranking.
 
     Returns:
-        (chunks, top_score)
-        chunks: list of {text, metadata, score} dicts, sorted by relevance
-        top_score: best cross-encoder score (used for threshold gate)
+        (chunks, coverage_ok)
+        chunks       — top MIN_CHUNKS_TO_LLM chunks sorted by combined score
+        coverage_ok  — False only if corpus has no relevant content (Gate 1 fail)
     """
     # 1. Embed query
     query_vec = embed_query(query)
@@ -64,7 +81,27 @@ def retrieve(
         query, n_results=HYBRID_CANDIDATES, doc_ids=doc_ids
     )
 
-    # 4. Merge by chunk identity key, normalise scores
+    # ── Gate 1: coverage check (retrieval signals only) ───────────────────────
+    top_vector_sim = vector_results[0]["score"] if vector_results else 0.0
+    bm25_hits = len(bm25_results)
+
+    if not vector_results and not bm25_results:
+        logger.info("Gate1 FAIL — no results from either source. query=%r", query)
+        return [], False
+
+    if top_vector_sim < COVERAGE_VECTOR_MIN and bm25_hits == 0:
+        logger.info(
+            "Gate1 FAIL — weak retrieval: top_vector_sim=%.3f bm25_hits=0. query=%r",
+            top_vector_sim, query,
+        )
+        return [], False
+
+    logger.info(
+        "Gate1 PASS — top_vector_sim=%.3f bm25_hits=%d. query=%r",
+        top_vector_sim, bm25_hits, query,
+    )
+
+    # 4. Merge by chunk identity, normalise BM25 scores to [0, 1]
     merged: dict[str, dict] = {}
 
     for chunk in vector_results:
@@ -81,26 +118,51 @@ def retrieve(
             else:
                 merged[key] = {**chunk, "vector_score": 0.0, "bm25_score": norm}
 
-    # Combined score for initial ordering before rerank
+    # Initial ordering by hybrid score before cross-encoder
     candidates = sorted(
         merged.values(),
         key=lambda x: VECTOR_WEIGHT * x["vector_score"] + BM25_WEIGHT * x["bm25_score"],
         reverse=True,
     )
 
-    if not candidates:
-        return [], -999.0
-
-    # 5. Cross-encoder rerank
+    # 5. Cross-encoder → sigmoid probabilities (ranking only, no hard gate)
     reranker = _get_reranker()
     pairs = [[query, c["text"]] for c in candidates]
-    scores = reranker.predict(pairs).tolist()
+    raw_scores = reranker.predict(pairs).tolist()
+    ce_probs = [_sigmoid(s) for s in raw_scores]
 
-    for chunk, score in zip(candidates, scores):
-        chunk["rerank_score"] = score
+    for chunk, ce_prob in zip(candidates, ce_probs):
+        chunk["ce_prob"] = ce_prob
 
-    reranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
-    top = reranked[:n_results]
-    top_score = top[0]["rerank_score"] if top else -999.0
+    max_ce_prob = max(ce_probs) if ce_probs else 0.0
 
-    return top, top_score
+    # 6. Fallback: reranker confused → trust raw retrieval order, zero out CE contribution
+    if max_ce_prob < FALLBACK_CE_PROB_MIN:
+        logger.info(
+            "Fallback mode — max_ce_prob=%.3f < %.3f, bypassing reranker",
+            max_ce_prob, FALLBACK_CE_PROB_MIN,
+        )
+        for chunk in candidates:
+            chunk["ce_prob"] = 0.0
+
+    # 7. Combined score — CE adds soft boost, never used as a hard filter
+    for chunk in candidates:
+        chunk["final_score"] = (
+            VECTOR_WEIGHT * chunk["vector_score"]
+            + BM25_WEIGHT * chunk["bm25_score"]
+            + CE_WEIGHT * chunk["ce_prob"]
+        )
+
+    ranked = sorted(candidates, key=lambda x: x["final_score"], reverse=True)
+
+    # 8. Always return at least MIN_CHUNKS_TO_LLM — never collapse LLM context
+    top = ranked[:MIN_CHUNKS_TO_LLM]
+
+    logger.info(
+        "Retrieval done — candidates=%d returned=%d max_ce_prob=%.3f top_final_score=%.3f",
+        len(candidates), len(top),
+        max_ce_prob,
+        top[0]["final_score"] if top else 0.0,
+    )
+
+    return top, True
