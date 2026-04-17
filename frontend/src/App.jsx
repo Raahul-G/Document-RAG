@@ -10,7 +10,9 @@ export default function App() {
   const [documents, setDocuments] = useState([])
   const [activeSessionId, setActiveSessionId] = useState(null)
 
-  // Fetch documents from API
+  // Derived: at least one indexed doc enables chat
+  const isReady = documents.some(d => d.status === "indexed")
+
   const fetchDocuments = useCallback(async () => {
     try {
       const res = await fetch("/api/documents")
@@ -21,7 +23,6 @@ export default function App() {
     }
   }, [])
 
-  // Fetch sessions for sidebar
   const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch("/api/sessions")
@@ -54,6 +55,7 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: "#F5F7FA" }}>
       <ChatSidebar
         sessions={sessions}
+        documents={documents}
         activeView={view}
         activeSessionId={activeSessionId}
         onSelectSession={(id) => { setActiveSessionId(id); setView("chat") }}
@@ -62,53 +64,37 @@ export default function App() {
       />
 
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Header */}
+        {/* Minimal header — no duplicate tab nav */}
         <header className="flex items-center justify-between px-6 py-3 bg-white border-b border-gray-200 shrink-0">
-          <div className="flex items-center gap-6">
-            <span className="text-base font-semibold" style={{ color: "#0D1B3E" }}>Document RAG</span>
-            <nav className="flex items-center gap-1">
-              <TabButton active={view === "chat"} onClick={() => setView("chat")}>Research Chat</TabButton>
-              <TabButton active={view === "upload"} onClick={() => setView("upload")}>Repository</TabButton>
-            </nav>
-          </div>
+          <span className="text-base font-semibold" style={{ color: "#0D1B3E" }}>
+            {view === "chat" ? "Research Chat" : "Document Repository"}
+          </span>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm" style={{ borderColor: "#E2E8F0", background: "#F5F7FA" }}>
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="6" cy="6" r="4.5" stroke="#9CA3AF" strokeWidth="1.3" />
-                <path d="M10.5 10.5L13 13" stroke="#9CA3AF" strokeWidth="1.3" strokeLinecap="round" />
-              </svg>
-              <input type="text" placeholder="Global search..." className="bg-transparent outline-none w-36 text-xs" style={{ color: "#6B7280" }} />
-            </div>
-
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border transition-colors" style={{ borderColor: "#E2E8F0" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#F5F7FA"}
-              onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 2a4.5 4.5 0 00-4.5 4.5v2L2 10h12l-1.5-1.5v-2A4.5 4.5 0 008 2zM6.5 12a1.5 1.5 0 003 0" stroke="#6B7280" strokeWidth="1.3" strokeLinecap="round" />
-              </svg>
-            </button>
-
-            <button
-              onClick={() => setView("upload")}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors"
-              style={{ background: "#003499" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#002580"}
-              onMouseLeave={e => e.currentTarget.style.background = "#003499"}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 9V3M7 3L4.5 5.5M7 3L9.5 5.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M2 11h10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-              Upload Document
-            </button>
-          </div>
+          <button
+            onClick={() => setView("upload")}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors"
+            style={{ background: "#003499" }}
+            onMouseEnter={e => e.currentTarget.style.background = "#002580"}
+            onMouseLeave={e => e.currentTarget.style.background = "#003499"}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 9V3M7 3L4.5 5.5M7 3L9.5 5.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2 11h10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Upload
+          </button>
         </header>
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {view === "chat" && <ChatInterface sessionId={activeSessionId} onSessionCreated={fetchSessions} />}
+          {view === "chat" && (
+            <ChatInterface
+              sessionId={activeSessionId}
+              isReady={isReady}
+              onSessionCreated={fetchSessions}
+              onGoToUpload={() => setView("upload")}
+            />
+          )}
 
           {view === "upload" && (
             <div className="h-full overflow-y-auto p-6">
@@ -184,20 +170,5 @@ export default function App() {
         </div>
       </div>
     </div>
-  )
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      className="px-3 py-1.5 text-sm font-medium transition-colors relative"
-      style={{ color: active ? "#003499" : "#9CA3AF" }}
-      onMouseEnter={e => { if (!active) e.currentTarget.style.color = "#374151" }}
-      onMouseLeave={e => { if (!active) e.currentTarget.style.color = active ? "#003499" : "#9CA3AF" }}
-    >
-      {children}
-      {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full" style={{ background: "#003499" }} />}
-    </button>
   )
 }

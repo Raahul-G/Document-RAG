@@ -1,4 +1,26 @@
-export default function ChatSidebar({ sessions = [], activeView, activeSessionId, onSelectSession, onNew, onNavigate }) {
+export default function ChatSidebar({
+  sessions = [],
+  documents = [],
+  activeView,
+  activeSessionId,
+  onSelectSession,
+  onNew,
+  onNavigate,
+}) {
+  const total = documents.length
+  const indexed = documents.filter(d => d.status === "indexed").length
+  const processing = documents.some(d => d.status === "processing" || d.status === "pending")
+  const hasFailed = documents.some(d => d.status === "failed")
+
+  // System state dot
+  const statusDot = processing
+    ? { color: "#F59E0B", label: "Processing" }
+    : indexed > 0
+    ? { color: "#16A34A", label: "Ready" }
+    : hasFailed
+    ? { color: "#DC2626", label: "Error" }
+    : { color: "#9CA3AF", label: "Idle" }
+
   return (
     <div className="w-56 flex flex-col bg-white border-r border-gray-200 shrink-0">
 
@@ -15,7 +37,7 @@ export default function ChatSidebar({ sessions = [], activeView, activeSessionId
         </div>
       </div>
 
-      {/* New Chat button */}
+      {/* New Session button */}
       <div className="px-3 pt-4 pb-2">
         <button
           onClick={onNew}
@@ -25,26 +47,15 @@ export default function ChatSidebar({ sessions = [], activeView, activeSessionId
           onMouseLeave={e => e.currentTarget.style.background = "#003499"}
         >
           <span className="text-base leading-none">+</span>
-          New Chat
+          New Session
         </button>
       </div>
 
       {/* Nav items */}
       <nav className="px-2 py-1">
         <NavItem
-          label="Documents"
-          active={activeView === "upload"}
-          onClick={() => onNavigate("upload")}
-          icon={
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-              <path d="M10 2v3h3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            </svg>
-          }
-        />
-        <NavItem
           label="Research Chat"
-          active={activeView === "chat" && !activeSessionId}
+          active={activeView === "chat"}
           onClick={() => onNavigate("chat")}
           icon={
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -52,12 +63,26 @@ export default function ChatSidebar({ sessions = [], activeView, activeSessionId
             </svg>
           }
         />
+        <NavItem
+          label="Documents"
+          active={activeView === "upload"}
+          onClick={() => onNavigate("upload")}
+          badge={total > 0 ? `${indexed}/${total}` : null}
+          icon={
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+              <path d="M10 2v3h3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+            </svg>
+          }
+        />
       </nav>
 
-      {/* Session list */}
+      {/* Session history */}
       {sessions.length > 0 && (
         <div className="px-3 pt-3">
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: "#9CA3AF" }}>Recent</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: "#9CA3AF" }}>
+            Recent Sessions
+          </p>
           <div className="space-y-0.5">
             {sessions.map((s) => (
               <button
@@ -81,20 +106,26 @@ export default function ChatSidebar({ sessions = [], activeView, activeSessionId
 
       <div className="flex-1" />
 
+      {/* System state indicator */}
+      <div className="mx-3 mb-2 px-3 py-2 rounded-lg flex items-center gap-2" style={{ background: "#F5F7FA" }}>
+        <span
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ background: statusDot.color, boxShadow: `0 0 0 2px ${statusDot.color}33` }}
+        />
+        <p className="text-[11px] font-medium" style={{ color: "#6B7280" }}>
+          {statusDot.label}
+          {indexed > 0 && !processing && (
+            <span style={{ color: "#9CA3AF" }}> · {indexed} doc{indexed > 1 ? "s" : ""}</span>
+          )}
+        </p>
+      </div>
+
       {/* Bottom nav */}
       <div className="border-t border-gray-100 px-2 py-2 space-y-0.5">
         <NavItem label="Settings" icon={
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.4" />
             <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-        } />
-        <NavItem label="System Status" icon={
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="10" width="2" height="4" rx="0.5" fill="currentColor" />
-            <rect x="5.5" y="7" width="2" height="7" rx="0.5" fill="currentColor" />
-            <rect x="9" y="4" width="2" height="10" rx="0.5" fill="currentColor" />
-            <rect x="12.5" y="2" width="2" height="12" rx="0.5" fill="currentColor" />
           </svg>
         } />
       </div>
@@ -113,7 +144,7 @@ export default function ChatSidebar({ sessions = [], activeView, activeSessionId
   )
 }
 
-function NavItem({ label, active, onClick, icon }) {
+function NavItem({ label, active, onClick, icon, badge }) {
   return (
     <button
       onClick={onClick}
@@ -130,7 +161,15 @@ function NavItem({ label, active, onClick, icon }) {
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r" style={{ background: "#003499" }} />
       )}
       <span style={{ color: active ? "#003499" : "#9CA3AF" }}>{icon}</span>
-      {label}
+      <span className="flex-1 text-left">{label}</span>
+      {badge && (
+        <span
+          className="text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0"
+          style={{ background: active ? "#C7D7F5" : "#EEF2FF", color: "#003499" }}
+        >
+          {badge}
+        </span>
+      )}
     </button>
   )
 }
