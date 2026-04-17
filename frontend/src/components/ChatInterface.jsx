@@ -2,12 +2,6 @@ import { useEffect, useRef, useState } from "react"
 
 const C = { primary: "#003371", primary2: "#00499c" }
 
-const SAMPLE_QUERIES = [
-  "Summarize the key points",
-  "What are the main findings?",
-  "List all requirements mentioned",
-  "What conclusions are drawn?",
-]
 
 export default function ChatInterface({ sessionId, isReady, onSessionCreated, onGoToUpload }) {
   const [question, setQuestion] = useState("")
@@ -151,21 +145,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                       <p className="text-sm mt-1.5 max-w-sm" style={{ color: "#64748b" }}>
                         Answers come strictly from your uploaded documents. No internet access.
                       </p>
-                    </div>
-                    {/* Sample query chips */}
-                    <div className="flex flex-wrap gap-2 justify-center max-w-sm">
-                      {SAMPLE_QUERIES.map(q => (
-                        <button
-                          key={q}
-                          onClick={() => setQuestion(q)}
-                          className="px-3.5 py-1.5 rounded-full text-xs font-medium border transition-colors"
-                          style={{ borderColor: "#c5d4fe", color: C.primary, background: "#eef2ff" }}
-                          onMouseEnter={e => { e.currentTarget.style.background = "#dbeafe" }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "#eef2ff" }}
-                        >
-                          {q}
-                        </button>
-                      ))}
                     </div>
                   </>
                 )}

@@ -29,9 +29,11 @@ Your ONLY job is to answer questions using the document passages provided to you
 STRICT RULES:
 1. Answer ONLY using information found in the provided passages.
 2. Do NOT use any external knowledge, training data, or assumptions.
-3. If the answer is NOT found in the passages, set "found" to false and "answer" to an empty string.
-4. Always cite the exact passage(s) you used in "sources".
-5. Return ONLY valid JSON — no extra text, no markdown fences, no explanation outside the JSON.
+3. You MAY use the conversation history to understand follow-up questions and resolve pronouns
+   (e.g. "it", "that", "the second one"), but your answer must still be grounded in the passages.
+4. If the answer is NOT found in the passages, set "found" to false and "answer" to an empty string.
+5. Always cite the exact passage(s) you used in "sources".
+6. Return ONLY valid JSON — no extra text, no markdown fences, no explanation outside the JSON.
 
 Response schema (return exactly this structure):
 {
@@ -71,14 +73,37 @@ def _build_context(chunks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def generate_answer(question: str, chunks: list[dict]) -> dict:
+def _build_history_block(history: list[dict]) -> str:
+    """Format prior Q&A turns into a conversation history block."""
+    lines = ["CONVERSATION HISTORY (for context only — do not answer from this):\n"]
+    for i, turn in enumerate(history, 1):
+        lines.append(f"Turn {i}:")
+        lines.append(f"  User: {turn['question']}")
+        lines.append(f"  Assistant: {turn['answer']}\n")
+    return "\n".join(lines)
+
+
+def generate_answer(
+    question: str,
+    chunks: list[dict],
+    history: list[dict] | None = None,
+) -> dict:
     """
-    Call Gemini 1.5 Pro with the question + retrieved passages.
+    Call Gemini with the question + retrieved passages + optional conversation history.
     Returns parsed {answer, found, sources} dict.
+
+    history: list of {question, answer} dicts ordered oldest → newest (max HISTORY_WINDOW turns)
     """
     client = _get_client()
     context = _build_context(chunks)
-    prompt = f"{context}\n\nQUESTION: {question}"
+
+    parts: list[str] = []
+    if history:
+        parts.append(_build_history_block(history))
+    parts.append(context)
+    parts.append(f"QUESTION: {question}")
+
+    prompt = "\n\n".join(parts)
 
     try:
         response = client.models.generate_content(

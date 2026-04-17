@@ -12,6 +12,8 @@ from backend.services import generation, retrieval
 
 logger = logging.getLogger(__name__)
 
+HISTORY_WINDOW = 5  # number of prior Q&A turns passed to Gemini
+
 router = APIRouter(prefix="/query", tags=["query"])
 
 
@@ -57,14 +59,33 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
             session_id=session.id,
         )
 
-    # 3. Generate answer via Gemini
+    # 3. Load conversation history from the current session (if any)
+    history: list[dict] = []
+    if payload.session_id:
+        recent = (
+            db.query(Message)
+            .filter(Message.session_id == payload.session_id)
+            .order_by(Message.created_at.desc())
+            .limit(HISTORY_WINDOW)
+            .all()
+        )
+        # reverse so oldest turn comes first
+        history = [
+            {"question": m.question, "answer": m.answer}
+            for m in reversed(recent)
+            if m.answer  # skip gate-1 misses that have no answer
+        ]
+        if history:
+            logger.info("Passing %d history turn(s) to Gemini for session %d", len(history), payload.session_id)
+
+    # 4. Generate answer via Gemini
     #    Gate 2: Gemini self-checks via found:false — it decides if chunks answer the question
     try:
-        result = generation.generate_answer(payload.question, chunks)
+        result = generation.generate_answer(payload.question, chunks, history=history or None)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # 4. Persist session + message
+    # 5. Persist session + message
     session = _get_or_create_session(payload.session_id, payload.question, db)
     sources = [CitationSource(**s) for s in result["sources"]]
     msg = Message(
