@@ -1,5 +1,5 @@
 """
-Answer generation using Gemini 1.5 Pro via google-genai SDK.
+Answer generation using Gemini via google-genai SDK.
 
 Rules enforced via system prompt:
   - Answer ONLY from provided passages (no external knowledge)
@@ -12,6 +12,7 @@ import json
 import logging
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from backend.config import settings
@@ -19,7 +20,7 @@ from backend.config import settings
 logger = logging.getLogger(__name__)
 
 _client: genai.Client | None = None
-GEMINI_MODEL = "gemini-1.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """You are a precise document analysis assistant.
 
@@ -103,6 +104,11 @@ def generate_answer(question: str, chunks: list[dict]) -> dict:
         logger.error("Gemini returned non-JSON: %s", e)
         return {"answer": "", "found": False, "sources": []}
 
+    except genai_errors.ClientError as e:
+        # 429 quota exhausted, 400 bad request, etc. — don't crash the server
+        logger.error("Gemini API client error: %s", e)
+        raise RuntimeError(f"LLM unavailable: {e}") from e
+
     except Exception as e:
         logger.error("Gemini generation error: %s", e)
-        raise
+        raise RuntimeError(f"LLM error: {e}") from e

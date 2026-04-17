@@ -66,7 +66,11 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
         body: JSON.stringify({ question: q, session_id: currentSessionId ?? null }),
       })
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (res.status === 503) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail ?? "The AI service is temporarily unavailable. Please try again.")
+      }
+      if (!res.ok) throw new Error(`Request failed (${res.status})`)
       const data = await res.json()
 
       if (!currentSessionId && data.session_id) {

@@ -56,7 +56,10 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
         )
 
     # 3. Generate answer via Gemini
-    result = generation.generate_answer(payload.question, chunks)
+    try:
+        result = generation.generate_answer(payload.question, chunks)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
     # 4. Persist session + message
     session = _get_or_create_session(payload.session_id, payload.question, db)
