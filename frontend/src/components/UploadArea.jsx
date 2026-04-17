@@ -1,24 +1,26 @@
 import { useRef, useState } from "react"
 
+const C = { primary: "#003371", primary2: "#00499c" }
+
 const ALLOWED_MIME = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]
 
 const STAGE_LABELS = {
-  waiting:   { label: "Queued",     color: "#9CA3AF" },
-  parsing:   { label: "Parsing",    color: "#F59E0B" },
-  chunking:  { label: "Chunking",   color: "#F59E0B" },
-  embedding: { label: "Embedding",  color: "#F59E0B" },
-  storing:   { label: "Storing",    color: "#F59E0B" },
-  done:      { label: "Indexed ✓",  color: "#16A34A" },
-  failed:    { label: "Failed",     color: "#DC2626" },
+  waiting:   { label: "Queued",    color: "#F59E0B" },
+  parsing:   { label: "Parsing",   color: "#F59E0B" },
+  chunking:  { label: "Chunking",  color: "#F59E0B" },
+  embedding: { label: "Embedding", color: "#F59E0B" },
+  storing:   { label: "Storing",   color: "#F59E0B" },
+  done:      { label: "Indexed",   color: "#16A34A" },
+  failed:    { label: "Failed",    color: "#DC2626" },
 }
 
 export default function UploadArea({ onUploadComplete }) {
   const inputRef = useRef(null)
   const [dragging, setDragging] = useState(false)
-  const [uploads, setUploads] = useState([]) // [{uid, name, stage, message, done, error}]
+  const [uploads, setUploads] = useState([])
 
   const setUploadField = (uid, fields) =>
     setUploads(prev => prev.map(u => u.uid === uid ? { ...u, ...fields } : u))
@@ -44,8 +46,6 @@ export default function UploadArea({ onUploadComplete }) {
         }
 
         const doc = await res.json()
-
-        // Connect to SSE progress stream
         const es = new EventSource(`/api/documents/${doc.id}/progress`)
 
         es.onmessage = (e) => {
@@ -71,86 +71,179 @@ export default function UploadArea({ onUploadComplete }) {
   const clearDone = () => setUploads(prev => prev.filter(u => !u.done))
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files) }}
-        className="rounded-xl border border-dashed py-10 flex flex-col items-center gap-4 transition-colors"
-        style={{ borderColor: dragging ? "#003499" : "#C7D7F5", background: dragging ? "#EEF2FF" : "#FAFBFF" }}
+        className="rounded-2xl border-2 border-dashed py-14 px-8 flex flex-col items-center gap-5 transition-all cursor-pointer"
+        style={{
+          borderColor: dragging ? C.primary : "rgba(0,51,113,0.2)",
+          background: dragging ? "#dbeafe" : "white",
+        }}
+        onClick={() => inputRef.current?.click()}
       >
-        <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#EEF2FF" }}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-            <path d="M12 16V8M12 8L9 11M12 8L15 11" stroke="#003499" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M20 16.5A4.5 4.5 0 0016 12H15a7 7 0 10-11.95 5" stroke="#003499" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-        </div>
-        <div className="text-center">
-          <p className="text-sm font-semibold" style={{ color: "#0D1B3E" }}>Upload knowledge assets</p>
-          <p className="text-xs mt-1" style={{ color: "#6B7280" }}>Drag and drop PDF or DOCX files. Max 50 MB per document.</p>
-        </div>
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="px-5 py-2 rounded-lg text-sm font-medium border transition-colors"
-          style={{ borderColor: "#003499", color: "#003499", background: "white" }}
-          onMouseEnter={e => e.currentTarget.style.background = "#EEF2FF"}
-          onMouseLeave={e => e.currentTarget.style.background = "white"}
+        {/* Icon */}
+        <div
+          className="w-20 h-20 rounded-full flex items-center justify-center"
+          style={{ background: "#dbeafe" }}
         >
-          Select Files
-        </button>
-        <input ref={inputRef} type="file" multiple accept=".pdf,.docx" className="hidden" onChange={e => handleFiles(e.target.files)} />
+          <span
+            className="material-symbols-outlined"
+            style={{ fontSize: "40px", color: C.primary, fontVariationSettings: "'FILL' 1" }}
+          >
+            cloud_upload
+          </span>
+        </div>
+
+        {/* Text */}
+        <div className="text-center">
+          <p className="font-bold text-base" style={{ color: "#191c1e" }}>
+            Drag and drop files here
+          </p>
+          <p className="text-sm mt-1.5" style={{ color: "#64748b" }}>
+            or click to browse — PDF and DOCX, up to 50 MB each
+          </p>
+        </div>
+
+        {/* CTA buttons */}
+        <div className="flex items-center gap-3" onClick={e => e.stopPropagation()}>
+          <button
+            onClick={() => inputRef.current?.click()}
+            className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-bold text-white transition-all hover:opacity-90 active:scale-[0.97]"
+            style={{ background: `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>upload_file</span>
+            Browse Files
+          </button>
+        </div>
+
+        {/* File type badges */}
+        <div className="flex items-center gap-2">
+          {["PDF", "DOCX"].map(type => (
+            <span
+              key={type}
+              className="text-[11px] px-2.5 py-1 rounded-full font-semibold border"
+              style={{ background: "#eef2ff", color: C.primary, borderColor: "#c5d4fe" }}
+            >
+              {type}
+            </span>
+          ))}
+          <span className="text-[11px]" style={{ color: "#94a3b8" }}>Supported formats</span>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept=".pdf,.docx"
+          className="hidden"
+          onChange={e => handleFiles(e.target.files)}
+        />
       </div>
 
       {/* Upload progress list */}
       {uploads.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-            <span className="text-xs font-semibold" style={{ color: "#6B7280" }}>Upload Progress</span>
+        <div
+          className="rounded-xl border overflow-hidden"
+          style={{ background: "white", borderColor: "rgba(226,232,240,0.8)" }}
+        >
+          {/* Header */}
+          <div
+            className="flex items-center justify-between px-5 py-3"
+            style={{ borderBottom: "1px solid rgba(226,232,240,0.6)" }}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="material-symbols-outlined"
+                style={{ fontSize: "16px", color: C.primary }}
+              >
+                upload
+              </span>
+              <span className="text-xs font-bold" style={{ color: "#191c1e" }}>
+                Upload Progress
+              </span>
+            </div>
             {uploads.some(u => u.done) && (
-              <button onClick={clearDone} className="text-xs transition-colors" style={{ color: "#9CA3AF" }}
-                onMouseEnter={e => e.currentTarget.style.color = "#003499"}
-                onMouseLeave={e => e.currentTarget.style.color = "#9CA3AF"}
+              <button
+                onClick={clearDone}
+                className="text-xs font-medium transition-colors"
+                style={{ color: "#94a3b8" }}
+                onMouseEnter={e => e.currentTarget.style.color = C.primary}
+                onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
               >
                 Clear completed
               </button>
             )}
           </div>
 
+          {/* Rows */}
           {uploads.map(u => {
             const s = STAGE_LABELS[u.stage] ?? STAGE_LABELS.waiting
+            const isPdf = u.name.toLowerCase().endsWith(".pdf")
             return (
-              <div key={u.uid} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0">
-                {/* Spinner or done icon */}
-                <div className="shrink-0 w-5 h-5 flex items-center justify-center">
-                  {u.done && !u.error ? (
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <circle cx="8" cy="8" r="7" fill="#16A34A" />
-                      <path d="M5 8l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  ) : u.error ? (
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <circle cx="8" cy="8" r="7" fill="#DC2626" />
-                      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                    </svg>
-                  ) : (
-                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <circle cx="8" cy="8" r="6" stroke="#E2E8F0" strokeWidth="2" />
-                      <path d="M8 2a6 6 0 016 6" stroke="#003499" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                  )}
+              <div
+                key={u.uid}
+                className="flex items-center gap-3 px-5 py-3.5"
+                style={{ borderTop: "1px solid rgba(226,232,240,0.4)" }}
+              >
+                {/* File type icon */}
+                <div
+                  className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                  style={{ background: "#f1f5f9" }}
+                >
+                  <span
+                    className="material-symbols-outlined"
+                    style={{
+                      fontSize: "18px",
+                      color: isPdf ? "#dc2626" : "#003371",
+                      fontVariationSettings: "'FILL' 1",
+                    }}
+                  >
+                    {isPdf ? "picture_as_pdf" : "description"}
+                  </span>
                 </div>
 
                 {/* File info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium truncate" style={{ color: "#0D1B3E" }}>{u.name}</p>
-                  <p className="text-[11px] truncate" style={{ color: u.error ? "#DC2626" : "#9CA3AF" }}>{u.message}</p>
+                  <p className="text-xs font-semibold truncate" style={{ color: "#191c1e" }}>
+                    {u.name}
+                  </p>
+                  <p
+                    className="text-[11px] mt-0.5 truncate"
+                    style={{ color: u.error ? "#dc2626" : "#94a3b8" }}
+                  >
+                    {u.message}
+                  </p>
                 </div>
 
-                {/* Stage badge */}
-                <span className="text-[11px] font-semibold shrink-0" style={{ color: s.color }}>
-                  {s.label}
-                </span>
+                {/* Status indicator */}
+                <div className="shrink-0 flex items-center gap-1.5">
+                  {u.done && !u.error ? (
+                    <span
+                      className="material-symbols-outlined"
+                      style={{ fontSize: "18px", color: "#16a34a", fontVariationSettings: "'FILL' 1" }}
+                    >
+                      check_circle
+                    </span>
+                  ) : u.error ? (
+                    <span
+                      className="material-symbols-outlined"
+                      style={{ fontSize: "18px", color: "#dc2626", fontVariationSettings: "'FILL' 1" }}
+                    >
+                      cancel
+                    </span>
+                  ) : (
+                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="6" stroke="#e2e8f0" strokeWidth="2" />
+                      <path d="M8 2a6 6 0 016 6" stroke={C.primary} strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  )}
+                  <span className="text-[11px] font-semibold" style={{ color: s.color }}>
+                    {s.label}
+                  </span>
+                </div>
               </div>
             )
           })}

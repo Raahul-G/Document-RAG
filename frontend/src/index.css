@@ -1,15 +1,17 @@
 @import "tailwindcss";
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  font-size: 24px;
+  line-height: 1;
+  display: inline-block;
 }
 
 body {
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  background: #F5F7FA;
-  color: #0D1B3E;
+  font-family: 'Inter', sans-serif;
+  background: #f7f9fb;
+  color: #191c1e;
+  overflow: hidden;
 }
 
 #root {
@@ -17,3 +19,7 @@ body {
   display: flex;
   overflow: hidden;
 }
+
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #e0e3e5; border-radius: 10px; }

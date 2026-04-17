@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 
+const C = { primary: "#003371", primary2: "#00499c" }
+
 const SAMPLE_QUERIES = [
   "Summarize the key points",
   "What are the main findings?",
@@ -15,14 +17,10 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
   const [activeSources, setActiveSources] = useState([])
   const bottomRef = useRef(null)
 
-  // Load messages when session changes (sidebar selection or new chat)
+  // Load session history when sidebar selection changes
   useEffect(() => {
     setCurrentSessionId(sessionId)
-    if (!sessionId) {
-      setMessages([])
-      setActiveSources([])
-      return
-    }
+    if (!sessionId) { setMessages([]); setActiveSources([]); return }
     fetch(`/api/sessions/${sessionId}`)
       .then(r => r.json())
       .then(data => {
@@ -45,7 +43,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
       .catch(console.error)
   }, [sessionId])
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, loading])
@@ -53,44 +50,38 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
   const handleSubmit = async (e) => {
     e?.preventDefault()
     if (!question.trim() || loading || !isReady) return
-
     const q = question.trim()
     setQuestion("")
     setMessages(prev => [...prev, { type: "question", text: q }])
     setLoading(true)
-
     try {
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q, session_id: currentSessionId ?? null }),
       })
-
       if (res.status === 503) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail ?? "The AI service is temporarily unavailable. Please try again.")
+        throw new Error(err.detail ?? "The AI service is temporarily unavailable.")
       }
       if (!res.ok) throw new Error(`Request failed (${res.status})`)
       const data = await res.json()
-
       if (!currentSessionId && data.session_id) {
         setCurrentSessionId(data.session_id)
         onSessionCreated?.()
       }
-
       const sources = data.sources ?? []
       if (sources.length > 0) setActiveSources(sources)
-
       setMessages(prev => [...prev, {
         type: "answer",
         text: data.found ? data.answer : "I could not find an answer to this question in the uploaded documents.",
         sources,
         found: data.found,
       }])
-    } catch {
+    } catch (err) {
       setMessages(prev => [...prev, {
         type: "answer",
-        text: "Something went wrong. Please check your connection and try again.",
+        text: err.message || "Something went wrong. Please try again.",
         sources: [],
         found: false,
       }])
@@ -99,245 +90,308 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
     }
   }
 
-  return (
-    <div className="flex h-full" style={{ background: "#F5F7FA" }}>
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit() }
+  }
 
-      {/* ── Main chat column ── */}
+  return (
+    <div className="flex h-full" style={{ background: "#f7f9fb" }}>
+
+      {/* ── Chat column ── */}
       <div className="flex flex-col flex-1 min-w-0">
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto py-6">
-        <div className="max-w-3xl mx-auto px-6 space-y-5">
+        <div className="flex-1 overflow-y-auto custom-scrollbar py-8">
+          <div className="max-w-3xl mx-auto px-8 space-y-8">
 
-          {/* Empty state */}
-          {messages.length === 0 && (
-            <div className="h-full flex flex-col items-center justify-center gap-5 pb-16">
-              {!isReady ? (
-                /* ── No documents indexed ── */
-                <>
-                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: "#EEF2FF" }}>
-                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
-                      <path d="M9 13h6M12 10v6M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="#003499" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </div>
-                  <div className="text-center max-w-xs">
-                    <p className="font-semibold text-sm" style={{ color: "#0D1B3E" }}>No documents indexed yet</p>
-                    <p className="text-xs mt-2 leading-relaxed" style={{ color: "#9CA3AF" }}>
-                      Upload a PDF or DOCX to get started. Answers are sourced strictly
-                      from your documents — no internet access.
-                    </p>
-                    <p className="text-[11px] mt-3 font-medium" style={{ color: "#6B7280" }}>
-                      Supported formats: PDF · DOCX
-                    </p>
-                  </div>
-                  <button
-                    onClick={onGoToUpload}
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white transition-colors"
-                    style={{ background: "#003499" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#002580"}
-                    onMouseLeave={e => e.currentTarget.style.background = "#003499"}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                      <path d="M7 9V3M7 3L4.5 5.5M7 3L9.5 5.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      <path d="M2 11h10" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-                    </svg>
-                    Upload Document
-                  </button>
-                </>
-              ) : (
-                /* ── Ready — show sample queries ── */
-                <>
-                  <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#EEF2FF" }}>
-                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-                      <circle cx="11" cy="11" r="7" stroke="#003499" strokeWidth="1.8" />
-                      <path d="M20 20L16.5 16.5" stroke="#003499" strokeWidth="1.8" strokeLinecap="round" />
-                    </svg>
-                  </div>
-                  <div className="text-center">
-                    <p className="font-semibold text-sm" style={{ color: "#0D1B3E" }}>Ask your documents anything</p>
-                    <p className="text-xs mt-1 max-w-xs" style={{ color: "#9CA3AF" }}>
-                      Answers come strictly from your uploaded documents. No internet access.
-                    </p>
-                  </div>
-                  {/* Sample query chips */}
-                  <div className="flex flex-wrap gap-2 justify-center max-w-sm">
-                    {SAMPLE_QUERIES.map((q) => (
-                      <button
-                        key={q}
-                        onClick={() => setQuestion(q)}
-                        className="px-3 py-1.5 rounded-full text-xs border transition-colors"
-                        style={{ borderColor: "#C7D7F5", color: "#003499", background: "#EEF2FF" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "#DBEAFE"}
-                        onMouseLeave={e => e.currentTarget.style.background = "#EEF2FF"}
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Message bubbles */}
-          {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.type === "question" ? "justify-end" : "justify-start"}`}>
-              {msg.type === "question" ? (
-                <div
-                  className="max-w-xl rounded-2xl rounded-br-sm px-4 py-3 text-sm text-white"
-                  style={{ background: "#003499" }}
-                >
-                  {msg.text}
-                </div>
-              ) : (
-                <div className="max-w-2xl w-full">
-                  <div
-                    className="bg-white rounded-2xl rounded-bl-sm px-5 py-4 text-sm border border-gray-200 shadow-sm"
-                    style={{ color: "#374151" }}
-                  >
-                    {msg.text}
-                  </div>
-
-                  {/* Inline citation pills */}
-                  {msg.sources?.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {msg.sources.map((src, j) => (
-                        <span
-                          key={j}
-                          className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-medium"
-                          style={{ background: "#EEF2FF", color: "#003499", borderColor: "#C7D7F5" }}
+            {/* Empty state */}
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-5 py-24">
+                {!isReady ? (
+                  <>
+                    <div
+                      className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                      style={{ background: "#dbeafe" }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "32px", color: C.primary, fontVariationSettings: "'FILL' 1" }}>
+                        cloud_upload
+                      </span>
+                    </div>
+                    <div className="text-center max-w-sm">
+                      <p className="font-bold text-base" style={{ color: "#191c1e" }}>No documents indexed yet</p>
+                      <p className="text-sm mt-2 leading-relaxed" style={{ color: "#64748b" }}>
+                        Upload a PDF or DOCX to get started. Answers are sourced
+                        strictly from your documents — no internet access.
+                      </p>
+                      <p className="text-xs mt-3 font-semibold" style={{ color: "#94a3b8" }}>
+                        Supported: PDF · DOCX
+                      </p>
+                    </div>
+                    <button
+                      onClick={onGoToUpload}
+                      className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-bold text-white transition-all hover:opacity-90"
+                      style={{ background: `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>upload</span>
+                      Upload Document
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                      style={{ background: "#dbeafe" }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "28px", color: C.primary, fontVariationSettings: "'FILL' 1" }}>
+                        smart_toy
+                      </span>
+                    </div>
+                    <div className="text-center">
+                      <p className="font-bold text-base" style={{ color: "#191c1e" }}>Ask your documents anything</p>
+                      <p className="text-sm mt-1.5 max-w-sm" style={{ color: "#64748b" }}>
+                        Answers come strictly from your uploaded documents. No internet access.
+                      </p>
+                    </div>
+                    {/* Sample query chips */}
+                    <div className="flex flex-wrap gap-2 justify-center max-w-sm">
+                      {SAMPLE_QUERIES.map(q => (
+                        <button
+                          key={q}
+                          onClick={() => setQuestion(q)}
+                          className="px-3.5 py-1.5 rounded-full text-xs font-medium border transition-colors"
+                          style={{ borderColor: "#c5d4fe", color: C.primary, background: "#eef2ff" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "#dbeafe" }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "#eef2ff" }}
                         >
-                          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                            <rect x="1" y="1" width="7" height="9" rx="0.8" stroke="#003499" strokeWidth="1.2" />
-                            <path d="M9 1.5v3h3" stroke="#003499" strokeWidth="1.2" />
-                          </svg>
-                          {src.doc_name} · p.{src.page} §{src.passage_index}
-                        </span>
+                          {q}
+                        </button>
                       ))}
                     </div>
-                  )}
-
-                  {/* Not-found indicator */}
-                  {!msg.found && msg.type === "answer" && (
-                    <p className="text-[11px] mt-1.5 flex items-center gap-1" style={{ color: "#9CA3AF" }}>
-                      <span>ⓘ</span> Could not locate an answer in the uploaded documents
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* Loading indicator */}
-          {loading && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-5 py-3 flex items-center gap-2 shadow-sm">
-                <span className="flex gap-1">
-                  {[0, 1, 2].map((i) => (
-                    <span
-                      key={i}
-                      className="w-1.5 h-1.5 rounded-full animate-bounce"
-                      style={{ background: "#003499", animationDelay: `${i * 0.15}s` }}
-                    />
-                  ))}
-                </span>
-                <span className="text-xs" style={{ color: "#9CA3AF" }}>Searching documents...</span>
+                  </>
+                )}
               </div>
-            </div>
-          )}
+            )}
 
-          <div ref={bottomRef} />
-        </div>{/* end max-w-3xl */}
-        </div>{/* end scroll area */}
+            {/* Message bubbles */}
+            {messages.map((msg, i) => (
+              <div key={i}>
+                {msg.type === "question" ? (
+                  /* User bubble — right-aligned */
+                  <div className="flex flex-col items-end gap-1">
+                    <div
+                      className="px-4 py-3 rounded-xl text-sm leading-relaxed text-white max-w-xl shadow-sm"
+                      style={{ background: C.primary }}
+                    >
+                      {msg.text}
+                    </div>
+                  </div>
+                ) : (
+                  /* AI answer — left-aligned with avatar */
+                  <div className="flex flex-col gap-2 max-w-2xl">
+                    {/* Avatar row */}
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-6 h-6 rounded flex items-center justify-center text-white shrink-0"
+                        style={{ background: C.primary }}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: "14px", fontVariationSettings: "'FILL' 1" }}>
+                          smart_toy
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-bold tracking-tight" style={{ color: C.primary }}>
+                        DOCRAG INTELLIGENCE
+                      </span>
+                    </div>
+                    {/* Bubble */}
+                    <div
+                      className="p-5 rounded-xl text-sm leading-relaxed border shadow-sm"
+                      style={{ background: "#f2f4f6", borderColor: "rgba(226,232,240,0.5)", color: "#191c1e" }}
+                    >
+                      {msg.text}
+                    </div>
+                    {/* Inline citation pills */}
+                    {msg.sources?.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {msg.sources.map((src, j) => (
+                          <span
+                            key={j}
+                            className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-semibold"
+                            style={{ background: "#eef2ff", color: C.primary, borderColor: "#c5d4fe" }}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: "12px", fontVariationSettings: "'FILL' 1" }}>
+                              description
+                            </span>
+                            {src.doc_name} · p.{src.page} §{src.passage_index}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Not found */}
+                    {!msg.found && (
+                      <p className="text-[11px] flex items-center gap-1" style={{ color: "#94a3b8" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>info</span>
+                        Could not locate an answer in the uploaded documents
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
 
-        {/* Input bar */}
-        <div className="border-t border-gray-200 bg-white py-4">
-          <div className="max-w-3xl mx-auto px-6">
+            {/* Typing indicator */}
+            {loading && (
+              <div className="flex flex-col gap-2 max-w-2xl">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded flex items-center justify-center text-white shrink-0" style={{ background: C.primary }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: "14px", fontVariationSettings: "'FILL' 1" }}>smart_toy</span>
+                  </div>
+                  <span className="text-[11px] font-bold tracking-tight" style={{ color: C.primary }}>DOCRAG INTELLIGENCE</span>
+                </div>
+                <div
+                  className="px-5 py-4 rounded-xl border shadow-sm flex items-center gap-2"
+                  style={{ background: "#f2f4f6", borderColor: "rgba(226,232,240,0.5)" }}
+                >
+                  <span className="flex gap-1">
+                    {[0, 1, 2].map(i => (
+                      <span
+                        key={i}
+                        className="w-1.5 h-1.5 rounded-full animate-bounce"
+                        style={{ background: C.primary, animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </span>
+                  <span className="text-xs" style={{ color: "#94a3b8" }}>Analyzing documents...</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+        </div>
+
+        {/* ── Input area ── */}
+        <div className="px-8 py-6" style={{ background: "#f7f9fb", borderTop: "1px solid rgba(226,232,240,0.6)" }}>
           {!isReady && (
-            <p className="text-[11px] mb-2 text-center" style={{ color: "#9CA3AF" }}>
+            <p className="text-[11px] mb-3 text-center" style={{ color: "#94a3b8" }}>
               Upload and index at least one document to enable chat
             </p>
           )}
-          <form onSubmit={handleSubmit} className="flex gap-3 items-center">
-            <input
-              type="text"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder={
-                isReady
-                  ? "Ask a question about your documents..."
-                  : "Waiting for indexed documents..."
-              }
-              disabled={!isReady}
-              className="flex-1 px-4 py-2.5 text-sm rounded-lg border outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{
-                borderColor: "#E2E8F0",
-                color: "#0D1B3E",
-                background: isReady ? "#F5F7FA" : "#F9FAFB",
-              }}
-              onFocus={e => { if (isReady) e.currentTarget.style.borderColor = "#003499" }}
-              onBlur={e => e.currentTarget.style.borderColor = "#E2E8F0"}
-            />
-            <button
-              type="submit"
-              disabled={!question.trim() || loading || !isReady}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-              style={{ background: "#003499" }}
-              onMouseEnter={e => { if (!e.currentTarget.disabled) e.currentTarget.style.background = "#002580" }}
-              onMouseLeave={e => e.currentTarget.style.background = "#003499"}
+          <div className="max-w-3xl mx-auto">
+            <div
+              className="bg-white rounded-xl shadow-sm border p-4 transition-all"
+              style={{ borderColor: "rgba(226,232,240,0.8)" }}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M12 7H2M8 3L12 7L8 11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Ask
-            </button>
-          </form>
-          </div>{/* end max-w-3xl */}
-        </div>{/* end input bar */}
-      </div>{/* end chat column */}
-
-      {/* ── Sources right panel (P2 — shown when last response has sources) ── */}
-      {activeSources.length > 0 && (
-        <div className="hidden lg:flex flex-col w-72 border-l border-gray-200 bg-white shrink-0">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: "#6B7280" }}>
-              Sources
-            </p>
-            <span
-              className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
-              style={{ background: "#EEF2FF", color: "#003499" }}
-            >
-              {activeSources.length}
-            </span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {activeSources.map((src, i) => (
-              <div
-                key={i}
-                className="rounded-xl border p-3 text-xs"
-                style={{ background: "#FAFBFF", borderColor: "#E8EEFA" }}
-              >
-                <div className="flex items-center justify-between mb-1.5 gap-2">
-                  <span className="font-semibold truncate" style={{ color: "#0D1B3E" }}>{src.doc_name}</span>
-                  <span
-                    className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                    style={{ background: "#EEF2FF", color: "#003499" }}
+              <textarea
+                value={question}
+                onChange={e => setQuestion(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  isReady
+                    ? "Ask a question about your documents… (Enter to send, Shift+Enter for new line)"
+                    : "Upload and index a document to start asking questions…"
+                }
+                disabled={!isReady}
+                rows={2}
+                className="w-full bg-transparent border-none resize-none outline-none text-sm leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ color: "#191c1e" }}
+              />
+              <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: "1px solid #f1f5f9" }}>
+                <div className="flex items-center gap-1">
+                  <button
+                    className="p-1.5 rounded-lg transition-colors"
+                    style={{ color: "#94a3b8" }}
+                    onMouseEnter={e => e.currentTarget.style.color = C.primary}
+                    onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
                   >
-                    p.{src.page} §{src.passage_index}
+                    <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>attach_file</span>
+                  </button>
+                </div>
+                <button
+                  onClick={handleSubmit}
+                  disabled={!question.trim() || loading || !isReady}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-bold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 active:scale-[0.97]"
+                  style={{ background: `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
+                >
+                  Analyze
+                  <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>send</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Citations right panel ── */}
+      {activeSources.length > 0 && (
+        <aside
+          className="hidden lg:flex flex-col w-80 shrink-0 custom-scrollbar"
+          style={{ background: "#f2f4f6", borderLeft: "1px solid rgba(226,232,240,0.5)" }}
+        >
+          {/* Panel header */}
+          <div className="px-6 py-5" style={{ borderBottom: "1px solid rgba(226,232,240,0.5)" }}>
+            <h3
+              className="font-extrabold text-base tracking-tight flex items-center gap-2"
+              style={{ color: C.primary }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>auto_stories</span>
+              Citations &amp; Sources
+            </h3>
+          </div>
+
+          {/* Cards */}
+          <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 space-y-5">
+            {activeSources.map((src, i) => (
+              <div key={i} className="group">
+                <div className="flex items-center justify-between mb-2">
+                  <span
+                    className="inline-flex items-center justify-center w-5 h-5 rounded text-white text-[10px] font-bold"
+                    style={{ background: C.primary }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#94a3b8" }}>
+                    P.{src.page} §{src.passage_index}
                   </span>
                 </div>
-                {src.section_title && (
-                  <p className="text-[10px] mb-1.5 font-medium" style={{ color: "#9CA3AF" }}>
-                    {src.section_title}
+                <div
+                  className="p-4 rounded-xl shadow-sm border-l-2 transition-all group-hover:shadow-md"
+                  style={{ background: "white", borderLeftColor: C.primary }}
+                >
+                  <p className="text-xs font-semibold truncate mb-1.5" style={{ color: "#191c1e" }}>{src.doc_name}</p>
+                  {src.section_title && (
+                    <p className="text-[10px] mb-2 font-medium" style={{ color: "#94a3b8" }}>{src.section_title}</p>
+                  )}
+                  <p
+                    className="text-xs leading-snug"
+                    style={{
+                      color: "#434652",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 5,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    "{src.text}"
                   </p>
-                )}
-                <p className="leading-relaxed" style={{ color: "#6B7280", display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                  {src.text}
-                </p>
+                </div>
               </div>
             ))}
           </div>
-        </div>
+
+          {/* Reliability indicator */}
+          <div
+            className="px-6 py-5 mt-auto"
+            style={{ borderTop: "1px solid rgba(226,232,240,0.5)", background: "#eceef0" }}
+          >
+            <div className="flex items-center justify-between text-[11px] mb-2">
+              <span style={{ color: "#64748b" }}>Document-grounded</span>
+              <span className="font-bold" style={{ color: C.primary }}>100%</span>
+            </div>
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "#c3c6d4" }}>
+              <div className="w-full h-full rounded-full" style={{ background: C.primary }} />
+            </div>
+          </div>
+        </aside>
       )}
     </div>
   )
