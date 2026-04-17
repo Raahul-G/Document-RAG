@@ -97,76 +97,82 @@ export default function App() {
           )}
 
           {view === "upload" && (
-            <div className="h-full overflow-y-auto p-6">
-              <div className="flex gap-6">
-                {/* Left column */}
-                <div className="flex-1 min-w-0 space-y-6">
-                  <div>
-                    <h1 className="text-xl font-bold" style={{ color: "#0D1B3E" }}>Document Repository</h1>
-                    <p className="text-sm mt-1" style={{ color: "#6B7280" }}>
-                      Manage your knowledge base. Uploaded documents are automatically chunked
-                      and indexed for high-precision retrieval during research sessions.
-                    </p>
-                  </div>
-                  <UploadArea onUploadComplete={fetchDocuments} />
-                  <DocumentLibrary documents={documents} onDelete={handleDelete} />
+            <div className="h-full overflow-y-auto py-8">
+              <div className="max-w-4xl mx-auto px-8 space-y-7">
+
+                {/* Page header */}
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight" style={{ color: "#0D1B3E" }}>
+                    Document Repository
+                  </h1>
+                  <p className="text-sm mt-1.5 max-w-xl" style={{ color: "#6B7280" }}>
+                    Uploaded documents are automatically chunked and indexed for
+                    high-precision retrieval. Supports PDF and DOCX.
+                  </p>
                 </div>
 
-                {/* Right column */}
-                <div className="w-64 shrink-0 space-y-4">
-                  {/* System health card */}
-                  <div className="rounded-xl p-5 text-white" style={{ background: "#0D1B3E" }}>
-                    <p className="text-[10px] font-semibold tracking-widest uppercase mb-4" style={{ color: "#9CA3AF" }}>System Health</p>
-                    <p className="text-4xl font-bold">
-                      {documents.length === 0 ? "—" : `${Math.round((documents.filter(d => d.status === "indexed").length / documents.length) * 100)}%`}
-                    </p>
-                    <p className="text-[10px] tracking-widest uppercase mt-1 mb-4" style={{ color: "#9CA3AF" }}>Indexed</p>
-                    <div className="h-1 rounded-full mb-4" style={{ background: "#1E3A6E" }}>
-                      <div
-                        className="h-1 rounded-full transition-all"
-                        style={{
-                          background: "#EEF2FF",
-                          width: documents.length === 0 ? "0%" : `${(documents.filter(d => d.status === "indexed").length / documents.length) * 100}%`,
-                        }}
-                      />
-                    </div>
-                    <div className="flex justify-between">
-                      <div>
-                        <p className="text-lg font-semibold">{documents.length}</p>
-                        <p className="text-[10px] tracking-wider uppercase" style={{ color: "#9CA3AF" }}>Documents</p>
-                      </div>
-                      <div>
-                        <p className="text-lg font-semibold">{documents.filter(d => d.status === "indexed").length}</p>
-                        <p className="text-[10px] tracking-wider uppercase" style={{ color: "#9CA3AF" }}>Indexed</p>
-                      </div>
-                    </div>
-                  </div>
+                {/* Stats row */}
+                <RepositoryStats documents={documents} />
 
-                  {/* Status card */}
-                  <div className="rounded-xl p-4 bg-white border border-gray-200">
-                    <div className="flex items-center gap-2.5 mb-3">
-                      <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: "#0D1B3E" }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                          <circle cx="7" cy="7" r="5" stroke="white" strokeWidth="1.3" />
-                          <path d="M7 4.5v3l2 1.5" stroke="white" strokeWidth="1.3" strokeLinecap="round" />
-                        </svg>
-                      </div>
-                      <p className="text-sm font-semibold" style={{ color: "#0D1B3E" }}>Index Status</p>
-                    </div>
-                    <p className="text-xs leading-relaxed" style={{ color: "#6B7280" }}>
-                      {documents.length === 0
-                        ? "No documents yet. Upload a PDF or DOCX to get started."
-                        : documents.some(d => d.status === "processing" || d.status === "pending")
-                        ? "Processing documents — this may take a moment on first run (model download)."
-                        : documents.some(d => d.status === "failed")
-                        ? "Some documents failed to index. Remove and re-upload to retry."
-                        : `All ${documents.length} document${documents.length > 1 ? "s" : ""} indexed and ready for search.`}
-                    </p>
-                  </div>
-                </div>
+                {/* Upload + library */}
+                <UploadArea onUploadComplete={fetchDocuments} />
+                <DocumentLibrary documents={documents} onDelete={handleDelete} />
+
               </div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RepositoryStats({ documents }) {
+  const total = documents.length
+  const indexed = documents.filter(d => d.status === "indexed").length
+  const processing = documents.some(d => d.status === "processing" || d.status === "pending")
+  const failed = documents.some(d => d.status === "failed")
+  const pct = total === 0 ? 0 : Math.round((indexed / total) * 100)
+
+  const statusLabel = processing
+    ? "Processing…"
+    : failed
+    ? "Action needed"
+    : indexed > 0
+    ? "Ready for search"
+    : "Upload to start"
+
+  const statusColor = processing ? "#F59E0B" : failed ? "#DC2626" : indexed > 0 ? "#16A34A" : "#9CA3AF"
+
+  return (
+    <div className="grid grid-cols-3 gap-4">
+      {/* Total */}
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-widest mb-3" style={{ color: "#9CA3AF" }}>
+          Documents
+        </p>
+        <p className="text-3xl font-bold" style={{ color: "#0D1B3E" }}>{total || "—"}</p>
+        <p className="text-xs mt-1" style={{ color: "#9CA3AF" }}>Total uploaded</p>
+      </div>
+
+      {/* Indexed */}
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-widest mb-3" style={{ color: "#9CA3AF" }}>
+          Indexed
+        </p>
+        <p className="text-3xl font-bold" style={{ color: "#003499" }}>{total === 0 ? "—" : indexed}</p>
+        <p className="text-xs mt-1" style={{ color: "#9CA3AF" }}>Ready for search</p>
+      </div>
+
+      {/* Status */}
+      <div className="rounded-xl px-5 py-4" style={{ background: "#0D1B3E" }}>
+        <p className="text-[11px] font-semibold uppercase tracking-widest mb-3" style={{ color: "#4A6FA5" }}>
+          Coverage
+        </p>
+        <p className="text-3xl font-bold text-white">{total === 0 ? "—" : `${pct}%`}</p>
+        <div className="flex items-center gap-1.5 mt-1">
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: statusColor }} />
+          <p className="text-xs" style={{ color: "#9CA3AF" }}>{statusLabel}</p>
         </div>
       </div>
     </div>

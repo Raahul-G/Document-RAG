@@ -102,7 +102,8 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
       <div className="flex flex-col flex-1 min-w-0">
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
+        <div className="flex-1 overflow-y-auto py-6">
+        <div className="max-w-3xl mx-auto px-6 space-y-5">
 
           {/* Empty state */}
           {messages.length === 0 && (
@@ -242,10 +243,12 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
           )}
 
           <div ref={bottomRef} />
-        </div>
+        </div>{/* end max-w-3xl */}
+        </div>{/* end scroll area */}
 
         {/* Input bar */}
-        <div className="px-8 py-4 border-t border-gray-200 bg-white">
+        <div className="border-t border-gray-200 bg-white py-4">
+          <div className="max-w-3xl mx-auto px-6">
           {!isReady && (
             <p className="text-[11px] mb-2 text-center" style={{ color: "#9CA3AF" }}>
               Upload and index at least one document to enable chat
@@ -285,8 +288,9 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
               Ask
             </button>
           </form>
-        </div>
-      </div>
+          </div>{/* end max-w-3xl */}
+        </div>{/* end input bar */}
+      </div>{/* end chat column */}
 
       {/* ── Sources right panel (P2 — shown when last response has sources) ── */}
       {activeSources.length > 0 && (
