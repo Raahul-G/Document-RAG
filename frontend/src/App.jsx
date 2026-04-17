@@ -21,7 +21,21 @@ export default function App() {
     }
   }, [])
 
-  useEffect(() => { fetchDocuments() }, [fetchDocuments])
+  // Fetch sessions for sidebar
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sessions")
+      const data = await res.json()
+      setSessions(data ?? [])
+    } catch (e) {
+      console.error("Failed to fetch sessions:", e)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchDocuments()
+    fetchSessions()
+  }, [fetchDocuments, fetchSessions])
 
   // Poll while any document is still processing
   useEffect(() => {
@@ -94,7 +108,7 @@ export default function App() {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {view === "chat" && <ChatInterface sessionId={activeSessionId} />}
+          {view === "chat" && <ChatInterface sessionId={activeSessionId} onSessionCreated={fetchSessions} />}
 
           {view === "upload" && (
             <div className="h-full overflow-y-auto p-6">

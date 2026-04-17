@@ -1,9 +1,41 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
-export default function ChatInterface({ sessionId }) {
+export default function ChatInterface({ sessionId, onSessionCreated }) {
   const [question, setQuestion] = useState("")
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
+  const [currentSessionId, setCurrentSessionId] = useState(sessionId)
+  const bottomRef = useRef(null)
+
+  // Load messages when session changes (sidebar selection or new chat)
+  useEffect(() => {
+    setCurrentSessionId(sessionId)
+    if (!sessionId) {
+      setMessages([])
+      return
+    }
+    fetch(`/api/sessions/${sessionId}`)
+      .then(r => r.json())
+      .then(data => {
+        const msgs = []
+        for (const m of (data.messages ?? [])) {
+          msgs.push({ type: "question", text: m.question })
+          msgs.push({
+            type: "answer",
+            text: m.answer || "I could not find an answer to this question in the uploaded documents.",
+            sources: JSON.parse(m.sources_json ?? "[]"),
+            found: !!m.answer,
+          })
+        }
+        setMessages(msgs)
+      })
+      .catch(console.error)
+  }, [sessionId])
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages, loading])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -11,17 +43,41 @@ export default function ChatInterface({ sessionId }) {
 
     const q = question.trim()
     setQuestion("")
-    setMessages((prev) => [...prev, { type: "question", text: q }])
+    setMessages(prev => [...prev, { type: "question", text: q }])
     setLoading(true)
 
-    // Query logic implemented in Milestone 5
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        { type: "answer", text: "Query pipeline not yet implemented.", sources: [], found: false },
-      ])
+    try {
+      const res = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q, session_id: currentSessionId ?? null }),
+      })
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+
+      // If this was a new session, notify parent to refresh sidebar
+      if (!currentSessionId && data.session_id) {
+        setCurrentSessionId(data.session_id)
+        onSessionCreated?.()
+      }
+
+      setMessages(prev => [...prev, {
+        type: "answer",
+        text: data.found ? data.answer : "I could not find an answer to this question in the uploaded documents.",
+        sources: data.sources ?? [],
+        found: data.found,
+      }])
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        type: "answer",
+        text: "An error occurred while querying. Please try again.",
+        sources: [],
+        found: false,
+      }])
+    } finally {
       setLoading(false)
-    }, 500)
+    }
   }
 
   return (
@@ -103,6 +159,8 @@ export default function ChatInterface({ sessionId }) {
             </div>
           </div>
         )}
+
+        <div ref={bottomRef} />
       </div>
 
       {/* Input bar */}
