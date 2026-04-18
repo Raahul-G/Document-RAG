@@ -144,10 +144,11 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
         not_found_msg = "I could not find an answer to this question in the uploaded documents."
 
         def _not_found():
-            yield (
-                f'data: {json.dumps({"type": "done", "found": False, "answer": not_found_msg,'
-                f' "sources": [], "session_id": session.id})}\n\n'
-            )
+            payload = json.dumps({
+                "type": "done", "found": False, "answer": not_found_msg,
+                "sources": [], "session_id": session.id,
+            })
+            yield f"data: {payload}\n\n"
 
         return StreamingResponse(_not_found(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -209,10 +210,11 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
         finally:
             db_write.close()
 
-        yield (
-            f'data: {json.dumps({"type": "done", "found": found, "answer": full_answer,'
-            f' "sources": sources_data, "session_id": session_id})}\n\n'
-        )
+        payload = json.dumps({
+            "type": "done", "found": found, "answer": full_answer,
+            "sources": sources_data, "session_id": session_id,
+        })
+        yield f"data: {payload}\n\n"
 
     return StreamingResponse(
         event_stream(),
