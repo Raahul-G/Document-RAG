@@ -4,6 +4,8 @@ Built from all chunks at server startup, rebuilt when new documents are ingested
 """
 from __future__ import annotations
 
+import re
+
 from rank_bm25 import BM25Okapi
 
 _index: BM25Okapi | None = None
@@ -11,7 +13,7 @@ _corpus: list[dict] = []  # parallel to index rows: [{text, metadata}, ...]
 
 
 def _tokenize(text: str) -> list[str]:
-    return text.lower().split()
+    return re.sub(r"[^\w\s]", " ", text).lower().split()
 
 
 def build_index(chunks: list[dict]) -> None:

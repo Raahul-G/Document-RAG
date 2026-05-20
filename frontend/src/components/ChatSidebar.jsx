@@ -17,6 +17,7 @@ export default function ChatSidebar({
   activeView,
   activeSessionId,
   onSelectSession,
+  onDeleteSession,
   onNew,
   onNavigate,
 }) {
@@ -89,20 +90,34 @@ export default function ChatSidebar({
           </p>
           <div className="space-y-0.5">
             {sessions.slice(0, 10).map(s => (
-              <button
+              <div
                 key={s.id}
-                onClick={() => onSelectSession(s.id)}
-                className="w-full text-left px-3 py-2 rounded-lg text-xs truncate transition-colors"
-                style={{
-                  color:      activeSessionId === s.id ? C.primary : C.muted,
-                  background: activeSessionId === s.id ? C.active  : "transparent",
-                  fontWeight: activeSessionId === s.id ? 600 : 400,
-                }}
+                className="group flex items-center rounded-lg transition-colors"
+                style={{ background: activeSessionId === s.id ? C.active : "transparent" }}
                 onMouseEnter={e => { if (activeSessionId !== s.id) e.currentTarget.style.background = C.hover }}
                 onMouseLeave={e => { if (activeSessionId !== s.id) e.currentTarget.style.background = "transparent" }}
               >
-                {s.title}
-              </button>
+                <button
+                  onClick={() => onSelectSession(s.id)}
+                  className="flex-1 text-left px-3 py-2 text-xs truncate min-w-0"
+                  style={{
+                    color:      activeSessionId === s.id ? C.primary : C.muted,
+                    fontWeight: activeSessionId === s.id ? 600 : 400,
+                  }}
+                >
+                  {s.title}
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onDeleteSession?.(s.id) }}
+                  className="opacity-0 group-hover:opacity-100 shrink-0 flex items-center justify-center w-6 h-6 mr-1.5 rounded transition-all hover:bg-red-100"
+                  title="Delete session"
+                  style={{ color: "#94a3b8" }}
+                  onMouseEnter={e => { e.currentTarget.style.color = "#ef4444" }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "#94a3b8" }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>delete</span>
+                </button>
+              </div>
             ))}
           </div>
         </div>

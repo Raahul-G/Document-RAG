@@ -43,6 +43,12 @@ export default function App() {
     setDocuments(prev => prev.filter(d => d.id !== docId))
   }
 
+  const handleDeleteSession = async (id) => {
+    await fetch(`/api/sessions/${id}`, { method: "DELETE" })
+    setSessions(prev => prev.filter(s => s.id !== id))
+    if (activeSessionId === id) setActiveSessionId(null)
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: "#f7f9fb" }}>
       <ChatSidebar
@@ -51,6 +57,7 @@ export default function App() {
         activeView={view}
         activeSessionId={activeSessionId}
         onSelectSession={(id) => { setActiveSessionId(id); setView("chat") }}
+        onDeleteSession={handleDeleteSession}
         onNew={() => { setActiveSessionId(null); setView("chat") }}
         onNavigate={setView}
       />

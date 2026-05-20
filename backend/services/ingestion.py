@@ -106,7 +106,7 @@ def _parse_docx(file_path: str) -> list[dict]:
         if not text:
             continue
 
-        style_name = (para.style.name or "").lower()
+        style_name = (para.style.name if para.style else "").lower()
         is_heading = "heading" in style_name or style_name == "title"
 
         char_count += len(text)
@@ -150,6 +150,15 @@ def _flush_chunk(
     start = 0
     while start < len(text):
         end = start + MAX_CHUNK_CHARS
+
+        # Snap end back to last word boundary to avoid splitting mid-word
+        if end < len(text):
+            boundary = end
+            while boundary > start and not text[boundary].isspace():
+                boundary -= 1
+            if boundary > start:
+                end = boundary
+
         fragment = text[start:end].strip()
         if not fragment:
             break
@@ -167,8 +176,15 @@ def _flush_chunk(
             "text": fragment,
         })
 
-        # Move forward with overlap so boundary content appears in both chunks
-        start = end - OVERLAP_CHARS
+        # Move forward with overlap so boundary content appears in both chunks.
+        # Snap the overlap start forward to the next full word to avoid starting mid-word.
+        next_start = end - OVERLAP_CHARS
+        if 0 < next_start < len(text):
+            while next_start < len(text) and not text[next_start].isspace():
+                next_start += 1
+            start = next_start + 1 if next_start < len(text) else len(text)
+        else:
+            start = next_start
 
 
 def _chunk(elements: list[dict], doc_id: int, doc_name: str) -> list[dict]:
@@ -188,13 +204,15 @@ def _chunk(elements: list[dict], doc_id: int, doc_name: str) -> list[dict]:
             # Flush current section before starting a new one
             if len(current_text.strip()) >= MIN_SECTION_CHARS:
                 _flush_chunk(current_text, current_page, current_section, doc_id, doc_name, page_counters, records)
-            elif current_text.strip():
-                # Prepend tiny sections to the next chunk instead of flushing standalone
-                pass  # will be picked up when we reset below
+                carry = ""
+            else:
+                # Section is below the minimum — carry its text forward so it is
+                # not silently lost; it will be prepended to the next section.
+                carry = current_text.rstrip() + "\n\n" if current_text.strip() else ""
 
             current_section = el["text"]
             current_page = el["page"]
-            current_text = el["text"] + "\n\n"
+            current_text = carry + el["text"] + "\n\n"
         else:
             current_page = el["page"]
             current_text += el["text"] + "\n"

@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 
+const THINKING_PHASES = [
+  { label: "Thinking",           icon: "psychology"     },
+  { label: "Searching documents",icon: "manage_search"  },
+  { label: "Analyzing",          icon: "analytics"      },
+  { label: "Preparing answer",   icon: "edit_note"      },
+]
+import { createPortal } from "react-dom"
+
 const C = { primary: "#003371", primary2: "#00499c" }
 
 
@@ -9,7 +17,20 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
   const [loading, setLoading] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState(sessionId)
   const [activeSources, setActiveSources] = useState([])
+  const [snippetModal, setSnippetModal] = useState(null)
+  const [copySuccess, setCopySuccess] = useState(false)
+  const [thinkingPhase, setThinkingPhase] = useState(0)
   const bottomRef = useRef(null)
+
+  // Cycle thinking phases while the streaming bubble has no text yet
+  const isWaiting = messages.some(m => m.streaming && !m.text)
+  useEffect(() => {
+    if (!isWaiting) { setThinkingPhase(0); return }
+    const id = setInterval(() => {
+      setThinkingPhase(p => (p + 1) % THINKING_PHASES.length)
+    }, 1600)
+    return () => clearInterval(id)
+  }, [isWaiting])
 
   // Load session history when sidebar selection changes
   useEffect(() => {
@@ -135,6 +156,59 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit() }
   }
 
+  const handlePillClick = async (src) => {
+    setSnippetModal({ src, imageUrl: null, loading: true, error: null })
+    const params = new URLSearchParams({
+      doc_name: src.doc_name,
+      page: String(src.page),
+      text: src.text ?? "",
+    })
+    // passage_index lets the backend look up the exact stored chunk text from
+    // the DB, bypassing any LLM-rewritten text that may have arrived in `text`.
+    if (src.passage_index != null) {
+      params.set("passage_index", String(src.passage_index))
+    }
+    try {
+      const res = await fetch(`/api/snippets/render?${params}`)
+      if (res.status === 501) {
+        setSnippetModal(prev => prev ? { ...prev, loading: false, error: "docx" } : null)
+        return
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || `Error ${res.status}`)
+      }
+      const blob = await res.blob()
+      const imageUrl = URL.createObjectURL(blob)
+      setSnippetModal(prev => prev ? { ...prev, imageUrl, loading: false } : null)
+    } catch (err) {
+      setSnippetModal(prev => prev ? { ...prev, loading: false, error: err.message || "Failed to load" } : null)
+    }
+  }
+
+  const handleModalClose = () => {
+    if (snippetModal?.imageUrl) URL.revokeObjectURL(snippetModal.imageUrl)
+    setSnippetModal(null)
+    setCopySuccess(false)
+  }
+
+  const handleCopyImage = async () => {
+    if (!snippetModal?.imageUrl) return
+    try {
+      const res = await fetch(snippetModal.imageUrl)
+      const blob = await res.blob()
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })])
+      setCopySuccess(true)
+      setTimeout(() => setCopySuccess(false), 2000)
+    } catch {
+      // Clipboard API not available — fall back to download
+      const a = document.createElement("a")
+      a.href = snippetModal.imageUrl
+      a.download = `${snippetModal.src.doc_name}_p${snippetModal.src.page}.png`
+      a.click()
+    }
+  }
+
   return (
     <div className="flex h-full" style={{ background: "#f7f9fb" }}>
 
@@ -233,28 +307,60 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                       className="p-5 rounded-xl text-sm leading-relaxed border shadow-sm"
                       style={{ background: "#f2f4f6", borderColor: "rgba(226,232,240,0.5)", color: "#191c1e" }}
                     >
-                      {msg.text || (msg.streaming ? "" : "—")}
-                      {msg.streaming && (
-                        <span
-                          className="inline-block w-0.5 h-3.5 ml-0.5 align-middle animate-pulse"
-                          style={{ background: C.primary }}
-                        />
+                      {msg.streaming && !msg.text ? (
+                        /* Thinking phases — shown while waiting for first token */
+                        <span className="flex items-center gap-3">
+                          <span
+                            className="material-symbols-outlined shrink-0 animate-spin"
+                            style={{ fontSize: "16px", color: C.primary, animationDuration: "1.2s" }}
+                          >
+                            {THINKING_PHASES[thinkingPhase].icon}
+                          </span>
+                          <span
+                            key={thinkingPhase}
+                            className="text-xs font-medium"
+                            style={{ color: C.primary, animation: "fadeIn 0.35s ease" }}
+                          >
+                            {THINKING_PHASES[thinkingPhase].label}
+                            <span className="inline-flex gap-0.5 ml-1 align-middle">
+                              {[0, 1, 2].map(i => (
+                                <span
+                                  key={i}
+                                  className="w-1 h-1 rounded-full animate-bounce inline-block"
+                                  style={{ background: C.primary, animationDelay: `${i * 0.18}s` }}
+                                />
+                              ))}
+                            </span>
+                          </span>
+                        </span>
+                      ) : (
+                        <>
+                          {msg.text || (msg.streaming ? "" : "—")}
+                          {msg.streaming && (
+                            <span
+                              className="inline-block w-0.5 h-3.5 ml-0.5 align-middle animate-pulse"
+                              style={{ background: C.primary }}
+                            />
+                          )}
+                        </>
                       )}
                     </div>
                     {/* Inline citation pills */}
                     {msg.sources?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-1">
                         {msg.sources.map((src, j) => (
-                          <span
+                          <button
                             key={j}
-                            className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-semibold"
+                            onClick={() => handlePillClick(src)}
+                            className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border font-semibold cursor-pointer transition-all hover:opacity-80 hover:shadow-sm active:scale-[0.97]"
                             style={{ background: "#eef2ff", color: C.primary, borderColor: "#c5d4fe" }}
+                            title="View source page"
                           >
                             <span className="material-symbols-outlined" style={{ fontSize: "12px", fontVariationSettings: "'FILL' 1" }}>
                               description
                             </span>
                             {src.doc_name} · p.{src.page} §{src.passage_index}
-                          </span>
+                          </button>
                         ))}
                       </div>
                     )}
@@ -270,32 +376,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
               </div>
             ))}
 
-            {/* Typing indicator — shown only before first token arrives */}
-            {loading && !messages.some(m => m.streaming && m.text) && (
-              <div className="flex flex-col gap-2 max-w-2xl">
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded flex items-center justify-center text-white shrink-0" style={{ background: C.primary }}>
-                    <span className="material-symbols-outlined" style={{ fontSize: "14px", fontVariationSettings: "'FILL' 1" }}>smart_toy</span>
-                  </div>
-                  <span className="text-[11px] font-bold tracking-tight" style={{ color: C.primary }}>DOCRAG INTELLIGENCE</span>
-                </div>
-                <div
-                  className="px-5 py-4 rounded-xl border shadow-sm flex items-center gap-2"
-                  style={{ background: "#f2f4f6", borderColor: "rgba(226,232,240,0.5)" }}
-                >
-                  <span className="flex gap-1">
-                    {[0, 1, 2].map(i => (
-                      <span
-                        key={i}
-                        className="w-1.5 h-1.5 rounded-full animate-bounce"
-                        style={{ background: C.primary, animationDelay: `${i * 0.15}s` }}
-                      />
-                    ))}
-                  </span>
-                  <span className="text-xs" style={{ color: "#94a3b8" }}>Analyzing documents...</span>
-                </div>
-              </div>
-            )}
 
             <div ref={bottomRef} />
           </div>
@@ -328,16 +408,7 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                 style={{ color: "#191c1e" }}
               />
               <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: "1px solid #f1f5f9" }}>
-                <div className="flex items-center gap-1">
-                  <button
-                    className="p-1.5 rounded-lg transition-colors"
-                    style={{ color: "#94a3b8" }}
-                    onMouseEnter={e => e.currentTarget.style.color = C.primary}
-                    onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>attach_file</span>
-                  </button>
-                </div>
+                <div />
                 <button
                   onClick={handleSubmit}
                   disabled={!question.trim() || loading || !isReady}
@@ -353,78 +424,122 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
         </div>
       </div>
 
-      {/* ── Citations right panel ── */}
-      {activeSources.length > 0 && (
-        <aside
-          className="hidden lg:flex flex-col w-80 shrink-0 custom-scrollbar"
-          style={{ background: "#f2f4f6", borderLeft: "1px solid rgba(226,232,240,0.5)" }}
+      {/* ── Snippet modal (portal → document.body so z-index is unaffected by parent stacking contexts) ── */}
+      {snippetModal && createPortal(
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.55)", zIndex: 9999 }}
+          onClick={handleModalClose}
         >
-          {/* Panel header */}
-          <div className="px-6 py-5" style={{ borderBottom: "1px solid rgba(226,232,240,0.5)" }}>
-            <h3
-              className="font-extrabold text-base tracking-tight flex items-center gap-2"
-              style={{ color: C.primary }}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>auto_stories</span>
-              Citations &amp; Sources
-            </h3>
-          </div>
-
-          {/* Cards */}
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 space-y-5">
-            {activeSources.map((src, i) => (
-              <div key={i} className="group">
-                <div className="flex items-center justify-between mb-2">
-                  <span
-                    className="inline-flex items-center justify-center w-5 h-5 rounded text-white text-[10px] font-bold"
-                    style={{ background: C.primary }}
-                  >
-                    {i + 1}
-                  </span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#94a3b8" }}>
-                    P.{src.page} §{src.passage_index}
-                  </span>
-                </div>
-                <div
-                  className="p-4 rounded-xl shadow-sm border-l-2 transition-all group-hover:shadow-md"
-                  style={{ background: "white", borderLeftColor: C.primary }}
-                >
-                  <p className="text-xs font-semibold truncate mb-1.5" style={{ color: "#191c1e" }}>{src.doc_name}</p>
-                  {src.section_title && (
-                    <p className="text-[10px] mb-2 font-medium" style={{ color: "#94a3b8" }}>{src.section_title}</p>
-                  )}
-                  <p
-                    className="text-xs leading-snug"
-                    style={{
-                      color: "#434652",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 5,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
-                    }}
-                  >
-                    "{src.text}"
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Reliability indicator */}
           <div
-            className="px-6 py-5 mt-auto"
-            style={{ borderTop: "1px solid rgba(226,232,240,0.5)", background: "#eceef0" }}
+            className="flex flex-col rounded-2xl shadow-2xl overflow-hidden"
+            style={{ background: "white", width: "100%", maxWidth: "780px", maxHeight: "90vh" }}
+            onClick={e => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between text-[11px] mb-2">
-              <span style={{ color: "#64748b" }}>Document-grounded</span>
-              <span className="font-bold" style={{ color: C.primary }}>100%</span>
+            {/* Header */}
+            <div
+              className="flex items-center justify-between px-6 py-4 shrink-0"
+              style={{ borderBottom: "1px solid #e2e8f0" }}
+            >
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="font-bold text-sm truncate" style={{ color: C.primary }}>
+                  {snippetModal.src.doc_name}
+                </span>
+                <span className="text-[11px]" style={{ color: "#94a3b8" }}>
+                  Page {snippetModal.src.page} · Passage {snippetModal.src.passage_index}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 ml-4">
+                <button
+                  onClick={handleCopyImage}
+                  disabled={!snippetModal.imageUrl}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90"
+                  style={{ background: copySuccess ? "#16a34a" : `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>
+                    {copySuccess ? "check" : "content_copy"}
+                  </span>
+                  {copySuccess ? "Copied!" : "Copy Image"}
+                </button>
+                <button
+                  onClick={handleModalClose}
+                  className="flex items-center justify-center w-8 h-8 rounded-lg transition-all hover:bg-slate-100"
+                  style={{ color: "#64748b" }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>close</span>
+                </button>
+              </div>
             </div>
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "#c3c6d4" }}>
-              <div className="w-full h-full rounded-full" style={{ background: C.primary }} />
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar flex items-center justify-center" style={{ minHeight: 0 }}>
+              {snippetModal.loading && (
+                <div className="flex flex-col items-center gap-3 py-16">
+                  <div
+                    className="w-10 h-10 rounded-full border-4 border-t-transparent animate-spin"
+                    style={{ borderColor: `${C.primary} transparent ${C.primary} ${C.primary}` }}
+                  />
+                  <span className="text-sm" style={{ color: "#94a3b8" }}>Rendering page…</span>
+                </div>
+              )}
+
+              {!snippetModal.loading && snippetModal.error === "docx" && (
+                <div className="p-8 w-full">
+                  <div
+                    className="rounded-xl p-6 border-l-4"
+                    style={{ background: "#f8fafc", borderLeftColor: C.primary }}
+                  >
+                    <p className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: C.primary }}>
+                      Cited Passage
+                    </p>
+                    <p className="text-sm leading-relaxed" style={{ color: "#191c1e" }}>
+                      "{snippetModal.src.text}"
+                    </p>
+                    <p className="text-[11px] mt-4" style={{ color: "#94a3b8" }}>
+                      Page rendering is only available for PDF documents.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {!snippetModal.loading && snippetModal.error && snippetModal.error !== "docx" && (
+                <div className="flex flex-col items-center gap-2 py-16">
+                  <span className="material-symbols-outlined" style={{ fontSize: "32px", color: "#f87171" }}>error</span>
+                  <p className="text-sm" style={{ color: "#64748b" }}>{snippetModal.error}</p>
+                </div>
+              )}
+
+              {!snippetModal.loading && snippetModal.imageUrl && (
+                <img
+                  src={snippetModal.imageUrl}
+                  alt={`Page ${snippetModal.src.page} of ${snippetModal.src.doc_name}`}
+                  className="w-full h-auto block"
+                />
+              )}
             </div>
+
+            {/* Footer — passage text */}
+            {snippetModal.src.text && (
+              <div
+                className="px-6 py-4 shrink-0 text-xs leading-relaxed"
+                style={{
+                  borderTop: "1px solid #e2e8f0",
+                  color: "#64748b",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 4,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }}
+              >
+                <span className="font-semibold" style={{ color: C.primary }}>Cited: </span>
+                "{snippetModal.src.text}"
+              </div>
+            )}
           </div>
-        </aside>
+        </div>,
+        document.body
       )}
+
     </div>
   )
 }

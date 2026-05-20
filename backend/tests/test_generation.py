@@ -170,7 +170,10 @@ class TestGenerateAnswer:
         assert "CONVERSATION HISTORY" not in prompt
 
     @patch("backend.services.generation._get_client")
-    def test_json_decode_error_returns_not_found(self, mock_get_client):
+    def test_json_decode_error_raises_runtime_error(self, mock_get_client):
+        # Malformed JSON from Gemini is an API failure, not a "not found" answer.
+        # It must raise RuntimeError so the caller can return 503, not silently
+        # show "I could not find an answer" to the user.
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         bad_response = MagicMock()
@@ -178,10 +181,8 @@ class TestGenerateAnswer:
         mock_client.models.generate_content.return_value = bad_response
 
         from backend.services.generation import generate_answer
-        result = generate_answer("Question?", self._sample_chunks())
-
-        assert result["found"] is False
-        assert result["answer"] == ""
+        with pytest.raises(RuntimeError, match="malformed JSON"):
+            generate_answer("Question?", self._sample_chunks())
 
     @patch("backend.services.generation._get_client")
     def test_client_error_raises_runtime_error(self, mock_get_client):

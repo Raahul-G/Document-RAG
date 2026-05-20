@@ -86,6 +86,19 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
+    # Gemini is instructed to cite exact passages but often paraphrases the text
+    # field in its JSON response.  Restore the original retrieved chunk text so
+    # the snippet highlighter always searches for text that actually exists in
+    # the PDF verbatim.
+    _chunk_text_by_key = {
+        (c["metadata"]["doc_name"], c["metadata"]["page_number"], c["metadata"]["passage_index"]): c["text"]
+        for c in chunks
+    }
+    for src in result.get("sources", []):
+        key = (src.get("doc_name"), src.get("page"), src.get("passage_index"))
+        if key in _chunk_text_by_key:
+            src["text"] = _chunk_text_by_key[key]
+
     # 5. Persist session + message
     session = _get_or_create_session(payload.session_id, payload.question, db)
     sources = [CitationSource(**s) for s in result["sources"]]
@@ -174,8 +187,9 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
     session_id = chat_session.id
     question = payload.question
 
-    # Top chunks as candidate sources (streaming mode — no per-passage citation from Gemini)
-    candidate_sources = [_chunk_to_source(c) for c in chunks[:3]]
+    # All retrieved chunks are candidate sources (streaming mode — no per-passage
+    # citation from Gemini, so expose everything the retriever ranked).
+    candidate_sources = [_chunk_to_source(c) for c in chunks]
 
     def event_stream():
         answer_parts: list[str] = []

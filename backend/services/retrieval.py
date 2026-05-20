@@ -10,7 +10,7 @@ Flow:
   6. Cross-encoder scoring → sigmoid probabilities (no hard threshold, ranking only)
   7. Fallback — if all CE probs < 0.1, bypass reranker and use raw retrieval order
   8. Combined score = 0.5 * vector_sim + 0.3 * bm25_norm + 0.2 * ce_prob
-  9. Return top MIN_CHUNKS_TO_LLM chunks — never collapse LLM context
+  9. Return 1–MAX_CHUNKS_TO_LLM chunks based on score-ratio cutoff
   Gate 2 (found:false) lives in Gemini — it decides if chunks answer the question.
 """
 from __future__ import annotations
@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
 HYBRID_CANDIDATES = 15          # candidates from each source (higher = better recall)
-MIN_CHUNKS_TO_LLM = 5           # minimum chunks always passed to LLM
+MAX_CHUNKS_TO_LLM = 5           # hard upper limit on chunks passed to LLM
+SCORE_RATIO_CUTOFF = 0.5        # drop chunks scoring below 50% of top chunk's score
 VECTOR_WEIGHT = 0.5
 BM25_WEIGHT = 0.3
 CE_WEIGHT = 0.2
@@ -65,7 +66,7 @@ def retrieve(
 
     Returns:
         (chunks, coverage_ok)
-        chunks       — top MIN_CHUNKS_TO_LLM chunks sorted by combined score
+        chunks       — 1–MAX_CHUNKS_TO_LLM chunks sorted by combined score
         coverage_ok  — False only if corpus has no relevant content (Gate 1 fail)
     """
     # 1. Embed query
@@ -155,8 +156,16 @@ def retrieve(
 
     ranked = sorted(candidates, key=lambda x: x["final_score"], reverse=True)
 
-    # 8. Always return at least MIN_CHUNKS_TO_LLM — never collapse LLM context
-    top = ranked[:MIN_CHUNKS_TO_LLM]
+    # 8. Dynamic selection: include chunks down to 50% of top score, cap at MAX_CHUNKS_TO_LLM
+    top_score = ranked[0]["final_score"] if ranked else 0.0
+    top: list[dict] = []
+    for chunk in ranked:
+        if len(top) >= MAX_CHUNKS_TO_LLM:
+            break
+        if len(top) == 0 or chunk["final_score"] >= top_score * SCORE_RATIO_CUTOFF:
+            top.append(chunk)
+        else:
+            break  # score dropped below ratio — stop here
 
     logger.info(
         "Retrieval done — candidates=%d returned=%d max_ce_prob=%.3f top_final_score=%.3f",

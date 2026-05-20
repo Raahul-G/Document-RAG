@@ -138,6 +138,9 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
 
     vectorstore.delete_document_chunks(document_id)
 
+    from backend.services.snippet import _render_cached
+    _render_cached.cache_clear()
+
     file_path = Path(settings.upload_dir) / doc.filename
     file_path.unlink(missing_ok=True)
 

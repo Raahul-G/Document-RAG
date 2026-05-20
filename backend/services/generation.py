@@ -140,7 +140,7 @@ def generate_answer(
 
     except json.JSONDecodeError as e:
         logger.error("Gemini returned non-JSON: %s", e)
-        return {"answer": "", "found": False, "sources": []}
+        raise RuntimeError(f"LLM returned malformed JSON: {e}") from e
 
     except genai_errors.ClientError as e:
         # 429 quota exhausted, 400 bad request, etc. — don't crash the server

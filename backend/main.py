@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.database import Base, engine
-from backend.routers import documents, query, sessions
+from backend.routers import documents, query, sessions, snippets
 
 
 @asynccontextmanager
@@ -45,6 +45,7 @@ app.add_middleware(
 app.include_router(documents.router, prefix="/api")
 app.include_router(query.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(snippets.router, prefix="/api")
 
 # Serve React build in production
 frontend_dist = Path("frontend/dist")
