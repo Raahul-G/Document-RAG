@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -21,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 _client: genai.Client | None = None
 GEMINI_MODEL = "gemini-2.5-flash"
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt (1s, 2s, 4s)
+
+
+def _is_retryable(e: Exception) -> bool:
+    """Return True for transient 503 / overload errors worth retrying."""
+    return isinstance(e, genai_errors.ClientError) and "503" in str(e)
 
 # ── Non-streaming prompt (structured JSON) ────────────────────────────────────
 SYSTEM_PROMPT = """You are a precise document analysis assistant.
@@ -118,38 +127,46 @@ def generate_answer(
 
     prompt = "\n\n".join(parts)
 
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.0,
-                max_output_tokens=2048,
-            ),
-        )
-        raw = response.text.strip()
-        result = json.loads(raw)
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    max_output_tokens=2048,
+                ),
+            )
+            raw = response.text.strip()
+            result = json.loads(raw)
 
-        return {
-            "answer": result.get("answer", ""),
-            "found": bool(result.get("found", False)),
-            "sources": result.get("sources", []),
-        }
+            return {
+                "answer": result.get("answer", ""),
+                "found": bool(result.get("found", False)),
+                "sources": result.get("sources", []),
+            }
 
-    except json.JSONDecodeError as e:
-        logger.error("Gemini returned non-JSON: %s", e)
-        raise RuntimeError(f"LLM returned malformed JSON: {e}") from e
+        except json.JSONDecodeError as e:
+            logger.error("Gemini returned non-JSON: %s", e)
+            raise RuntimeError(f"LLM returned malformed JSON: {e}") from e
 
-    except genai_errors.ClientError as e:
-        # 429 quota exhausted, 400 bad request, etc. — don't crash the server
-        logger.error("Gemini API client error: %s", e)
-        raise RuntimeError(f"LLM unavailable: {e}") from e
+        except genai_errors.ClientError as e:
+            if _is_retryable(e) and attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Gemini 503 on attempt %d/%d — retrying in %.1fs",
+                    attempt + 1, _MAX_RETRIES, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error("Gemini API client error: %s", e)
+                raise RuntimeError(f"LLM unavailable: {e}") from e
 
-    except Exception as e:
-        logger.error("Gemini generation error: %s", e)
-        raise RuntimeError(f"LLM error: {e}") from e
+        except Exception as e:
+            logger.error("Gemini generation error: %s", e)
+            raise RuntimeError(f"LLM error: {e}") from e
 
 
 # ── Streaming ─────────────────────────────────────────────────────────────────
@@ -184,17 +201,35 @@ def stream_answer(
     parts.append(f"QUESTION: {question}")
     prompt = "\n\n".join(parts)
 
-    try:
-        raw_stream = client.models.generate_content_stream(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=STREAM_SYSTEM_PROMPT,
-                temperature=0.0,
-                max_output_tokens=2048,
-            ),
-        )
+    raw_stream = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            raw_stream = client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=STREAM_SYSTEM_PROMPT,
+                    temperature=0.0,
+                    max_output_tokens=2048,
+                ),
+            )
+            break  # stream opened successfully
+        except genai_errors.ClientError as e:
+            if _is_retryable(e) and attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Gemini 503 on attempt %d/%d — retrying in %.1fs",
+                    attempt + 1, _MAX_RETRIES, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error("Gemini stream client error: %s", e)
+                raise RuntimeError(f"LLM unavailable: {e}") from e
+        except Exception as e:
+            logger.error("Gemini stream error: %s", e)
+            raise RuntimeError(f"LLM error: {e}") from e
 
+    try:
         buffer = ""
         yielded_any = False
 
