@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -34,10 +35,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Document RAG", version="0.1.0", lifespan=lifespan)
 
+_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173")
+_allow_credentials = _origins_raw != "*"
+_origins = ["*"] if _origins_raw == "*" else [o.strip() for o in _origins_raw.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
