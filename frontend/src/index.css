@@ -28,3 +28,37 @@ body {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0);   }
 }
+
+/* @mention chip rendered inside the contenteditable input */
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: #dbeafe;
+  color: #003371;
+  border: 1px solid #bfdbfe;
+  border-radius: 5px;
+  padding: 1px 5px 1px 5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: middle;
+  margin: 0 1px;
+}
+
+.mention-chip-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 0 0 3px;
+  font-size: 14px;
+  line-height: 1;
+  color: #003371;
+  opacity: 0.45;
+  display: inline-flex;
+  align-items: center;
+}
+
+.mention-chip-x:hover { opacity: 1; }

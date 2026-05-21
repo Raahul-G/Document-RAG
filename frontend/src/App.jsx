@@ -75,6 +75,7 @@ export default function App() {
               isReady={isReady}
               onSessionCreated={fetchSessions}
               onGoToUpload={() => setView("upload")}
+              documents={documents}
             />
           )}
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import MentionInput from "./MentionInput"
 
 const THINKING_PHASES = [
   { label: "Thinking",           icon: "psychology"     },
@@ -11,8 +12,10 @@ import { createPortal } from "react-dom"
 const C = { primary: "#003371", primary2: "#00499c" }
 
 
-export default function ChatInterface({ sessionId, isReady, onSessionCreated, onGoToUpload }) {
-  const [question, setQuestion] = useState("")
+export default function ChatInterface({ sessionId, isReady, onSessionCreated, onGoToUpload, documents }) {
+  const [inputText, setInputText] = useState("")
+  const [taggedDocs, setTaggedDocs] = useState([])
+  const mentionInputRef = useRef(null)
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState(sessionId)
@@ -64,20 +67,33 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
 
   const handleSubmit = async (e) => {
     e?.preventDefault()
-    if (!question.trim() || loading || !isReady) return
-    const q = question.trim()
-    setQuestion("")
-    setMessages(prev => [...prev, { type: "question", text: q }])
+    if (!inputText.trim() || loading || !isReady) return
+
+    const q = inputText.trim()
+    // Capture tagged docs before reset (reset clears the chips from the DOM)
+    const scopedDocs = [...taggedDocs]
+    const docIds = scopedDocs.map(d => d.id)
+
+    // Clear the input
+    mentionInputRef.current?.reset()
+    setInputText("")
+    setTaggedDocs([])
+
+    setMessages(prev => [...prev, { type: "question", text: q, scopedDocs }])
     setLoading(true)
 
     // Insert a streaming placeholder immediately so the user sees the bubble appear
-    setMessages(prev => [...prev, { type: "answer", text: "", sources: [], found: true, streaming: true }])
+    setMessages(prev => [...prev, { type: "answer", text: "", sources: [], found: true, streaming: true, scopedDocs }])
 
     try {
       const res = await fetch("/api/query/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, session_id: currentSessionId ?? null }),
+        body: JSON.stringify({
+          question: q,
+          session_id: currentSessionId ?? null,
+          doc_filter: docIds.length > 0 ? docIds : null,
+        }),
       })
       if (!res.ok) throw new Error(`Request failed (${res.status})`)
 
@@ -120,16 +136,18 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
             setMessages(prev => {
               const msgs = [...prev]
               const last = msgs[msgs.length - 1]
-              if (last?.type === "answer" && last.streaming)
+              if (last?.type === "answer" && last.streaming) {
+                const notFoundMsg = last.scopedDocs?.length > 0
+                  ? `I could not find an answer in ${last.scopedDocs.map(d => `@${d.name}`).join(", ")}.`
+                  : "I could not find an answer to this question in the uploaded documents."
                 msgs[msgs.length - 1] = {
                   type: "answer",
-                  text: event.found
-                    ? (last.text || event.answer)
-                    : "I could not find an answer to this question in the uploaded documents.",
+                  text: event.found ? (last.text || event.answer) : notFoundMsg,
                   sources,
                   found: event.found,
                   streaming: false,
                 }
+              }
               return msgs
             })
           } else if (event.type === "error") {
@@ -150,10 +168,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
     } finally {
       setLoading(false)
     }
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit() }
   }
 
   const handlePillClick = async (src) => {
@@ -283,6 +297,24 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                       style={{ background: C.primary }}
                     >
                       {msg.text}
+                      {/* Scoped document tags shown below the question text */}
+                      {msg.scopedDocs?.length > 0 && (
+                        <div
+                          className="flex flex-wrap gap-1 mt-2 pt-2"
+                          style={{ borderTop: "1px solid rgba(255,255,255,0.2)" }}
+                        >
+                          {msg.scopedDocs.map(d => (
+                            <span
+                              key={d.id}
+                              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold"
+                              style={{ background: "rgba(255,255,255,0.18)", color: "white" }}
+                            >
+                              <span className="material-symbols-outlined" style={{ fontSize: "10px", fontVariationSettings: "'FILL' 1" }}>description</span>
+                              @{d.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -393,25 +425,23 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
               className="bg-white rounded-xl shadow-sm border p-4 transition-all"
               style={{ borderColor: "rgba(226,232,240,0.8)" }}
             >
-              <textarea
-                value={question}
-                onChange={e => setQuestion(e.target.value)}
-                onKeyDown={handleKeyDown}
+              <MentionInput
+                ref={mentionInputRef}
+                documents={documents}
+                disabled={!isReady}
                 placeholder={
                   isReady
-                    ? "Ask a question about your documents… (Enter to send, Shift+Enter for new line)"
+                    ? "Ask a question… type @ to scope to a document (Enter to send)"
                     : "Upload and index a document to start asking questions…"
                 }
-                disabled={!isReady}
-                rows={2}
-                className="w-full bg-transparent border-none resize-none outline-none text-sm leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ color: "#191c1e" }}
+                onChange={(text, tags) => { setInputText(text); setTaggedDocs(tags) }}
+                onSubmit={handleSubmit}
               />
               <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: "1px solid #f1f5f9" }}>
                 <div />
                 <button
                   onClick={handleSubmit}
-                  disabled={!question.trim() || loading || !isReady}
+                  disabled={!inputText.trim() || loading || !isReady}
                   className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-bold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 active:scale-[0.97]"
                   style={{ background: `linear-gradient(135deg, ${C.primary} 0%, ${C.primary2} 100%)` }}
                 >
