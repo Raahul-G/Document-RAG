@@ -4,6 +4,22 @@ A locally hosted Retrieval-Augmented Generation (RAG) system for querying PDF an
 
 ---
 
+## Screenshots
+
+**Home — empty state**
+![Home screen showing the chat interface ready for queries](docs/screenshots/01-home.png)
+
+**Knowledge Ingestion — document library**
+![Upload page with drag-and-drop area, indexed document, and 100% index coverage](docs/screenshots/02-upload.png)
+
+**Chat — streaming answers with source citations**
+![Chat interface showing a multi-turn conversation with cited passages](docs/screenshots/03-chat.png)
+
+**Snippet Viewer — exact passage highlight**
+![Snippet viewer modal showing the retrieved passage highlighted in the source document](docs/screenshots/04-snippet-viewer.png)
+
+---
+
 ## Architecture Overview
 
 ```
