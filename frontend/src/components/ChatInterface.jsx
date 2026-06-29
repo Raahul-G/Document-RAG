@@ -264,9 +264,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                       <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>upload</span>
                       Upload Document
                     </button>
-                    <p className="text-xs font-bold" style={{ color: C.primary }}>
-                      🛡️ Runs entirely on your local machine — No data is sent out
-                    </p>
                   </>
                 ) : (
                   <>
@@ -284,9 +281,6 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                         Answers come strictly from your uploaded documents. No internet access.
                       </p>
                     </div>
-                    <p className="text-xs font-bold" style={{ color: C.primary }}>
-                      🛡️ Runs entirely on your local machine — No data is sent out
-                    </p>
                   </>
                 )}
               </div>
