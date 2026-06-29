@@ -32,7 +32,7 @@ COPY backend/ ./backend/
 COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 
 # Create data directories
-RUN mkdir -p /data /uploads
+RUN mkdir -p /data /uploads /models
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app

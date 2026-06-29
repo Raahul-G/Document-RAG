@@ -211,3 +211,70 @@ class TestSourceTextRestoration:
         data = resp.json()
         assert data["found"] is False
         assert data["sources"] == []
+
+
+# ── Query rewriting integration ───────────────────────────────────────────────
+
+class TestQueryRewriting:
+    """
+    Verify that the rewritten query is used for retrieval and that the original
+    question is still passed to generate_answer (rewriting is retrieval-only).
+    """
+
+    @patch("backend.routers.query.generation.rewrite_query")
+    @patch("backend.routers.query.retrieval.retrieve")
+    @patch("backend.routers.query.generation.generate_answer")
+    def test_retrieve_called_with_rewritten_query(
+        self, mock_gen, mock_retrieve, mock_rewrite
+    ):
+        """retrieve() must receive the rewritten query, not the raw question."""
+        mock_rewrite.return_value = "France revenue figures"
+        mock_retrieve.return_value = ([_make_chunk()], True)
+        mock_gen.return_value = _generation_result("Answer.", [])
+
+        resp = client.post(
+            "/api/query",
+            json={"question": "What about its revenue?", "session_id": None},
+        )
+        assert resp.status_code == 200
+
+        call_query = (
+            mock_retrieve.call_args.kwargs.get("query")
+            or mock_retrieve.call_args.args[0]
+        )
+        assert call_query == "France revenue figures"
+
+    @patch("backend.routers.query.generation.rewrite_query")
+    @patch("backend.routers.query.retrieval.retrieve")
+    @patch("backend.routers.query.generation.generate_answer")
+    def test_generate_answer_uses_original_question(
+        self, mock_gen, mock_retrieve, mock_rewrite
+    ):
+        """generate_answer() must always receive the original question, not the rewritten one."""
+        mock_rewrite.return_value = "France revenue figures"
+        mock_retrieve.return_value = ([_make_chunk()], True)
+        mock_gen.return_value = _generation_result("Answer.", [])
+
+        client.post(
+            "/api/query",
+            json={"question": "What about its revenue?", "session_id": None},
+        )
+
+        original_question = mock_gen.call_args.args[0]
+        assert original_question == "What about its revenue?"
+
+    @patch("backend.routers.query.generation.rewrite_query")
+    @patch("backend.routers.query.retrieval.retrieve")
+    @patch("backend.routers.query.generation.generate_answer")
+    def test_rewrite_called_before_retrieve(
+        self, mock_gen, mock_retrieve, mock_rewrite
+    ):
+        """rewrite_query must be called before retrieve on every request."""
+        call_order = []
+        mock_rewrite.side_effect = lambda q, h: (call_order.append("rewrite"), q)[1]
+        mock_retrieve.side_effect = lambda **kw: (call_order.append("retrieve"), ([_make_chunk()], True))[1]
+        mock_gen.return_value = _generation_result("Answer.", [])
+
+        client.post("/api/query", json={"question": "Q?", "session_id": None})
+
+        assert call_order.index("rewrite") < call_order.index("retrieve")

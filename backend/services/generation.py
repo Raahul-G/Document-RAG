@@ -1,5 +1,5 @@
 """
-Answer generation using Gemini via google-genai SDK.
+Answer generation using a local GGUF model via llama-cpp-python.
 
 Rules enforced via system prompt:
   - Answer ONLY from provided passages (no external knowledge)
@@ -10,26 +10,51 @@ from __future__ import annotations
 
 import json
 import logging
-import time
+import re
 
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
+from llama_cpp import Llama, LlamaGrammar
 
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-_client: genai.Client | None = None
-GEMINI_MODEL = "gemini-2.5-flash"
+_llm: Llama | None = None
 
-_MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt (1s, 2s, 4s)
+_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "found": {"type": "boolean"},
+        "sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "doc_name": {"type": "string"},
+                    "page": {"type": "integer"},
+                    "passage_index": {"type": "integer"},
+                    "section_title": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["doc_name", "page", "passage_index", "section_title", "text"],
+            },
+        },
+    },
+    "required": ["answer", "found", "sources"],
+}
 
 
-def _is_retryable(e: Exception) -> bool:
-    """Return True for transient 503 / overload errors worth retrying."""
-    return isinstance(e, genai_errors.ClientError) and "503" in str(e)
+# ── Query rewriting prompt ────────────────────────────────────────────────────
+_REWRITE_SYSTEM_PROMPT = """You are a search query rewriter for a document retrieval system.
+
+Given a conversation history and a follow-up question, rewrite the question into a fully self-contained search query that can be understood without any prior context.
+
+Rules:
+- Resolve all pronouns and references (it, that, they, the previous one, those, etc.) using the conversation history
+- Include key entities, topics, and concepts from previous turns if the question references them
+- Output ONLY the rewritten query — no explanation, no preamble, no quotes
+- If the question is already fully self-contained (no references to prior turns), output it unchanged"""
+
 
 # ── Non-streaming prompt (structured JSON) ────────────────────────────────────
 SYSTEM_PROMPT = """You are a precise document analysis assistant.
@@ -73,11 +98,17 @@ OUTPUT RULES — follow exactly:
 - Do not explain why you cannot answer. Just: NOT_FOUND"""
 
 
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=settings.gemini_api_key)
-    return _client
+def _get_llm() -> Llama:
+    global _llm
+    if _llm is None:
+        _llm = Llama(
+            model_path=settings.llm_model_path,
+            n_ctx=settings.llm_n_ctx,
+            n_threads=settings.llm_n_threads,
+            n_gpu_layers=settings.llm_n_gpu_layers,
+            verbose=False,
+        )
+    return _llm
 
 
 def _build_context(chunks: list[dict]) -> str:
@@ -105,18 +136,89 @@ def _build_history_block(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _repair_json(raw: str) -> dict:
+    """
+    Try to parse JSON from raw LLM output, with fallback strategies.
+    Raises ValueError if all strategies fail.
+    """
+    # 1. Direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Strip markdown fences
+    stripped = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Regex extract first {...} block
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not parse JSON from LLM output: {raw[:200]!r}")
+
+
+def rewrite_query(question: str, history: list[dict]) -> str:
+    """
+    Rewrite a follow-up question into a standalone search query using conversation history.
+    Resolves pronouns and anaphoric references so retrieval gets a self-contained query.
+
+    Returns the original question unchanged when no history is provided (first turn).
+    Falls back to the original question on any LLM error.
+    """
+    if not history:
+        return question
+
+    llm = _get_llm()
+
+    history_text = "\n".join(
+        f"User: {t['question']}\nAssistant: {t['answer']}" for t in history
+    )
+    messages = [
+        {"role": "system", "content": _REWRITE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Conversation history:\n{history_text}\n\n"
+                f"Follow-up question: {question}\n\n"
+                "Rewritten query:"
+            ),
+        },
+    ]
+
+    try:
+        response = llm.create_chat_completion(
+            messages=messages,
+            temperature=0.0,
+            max_tokens=128,
+            stream=False,
+        )
+        rewritten = response["choices"][0]["message"]["content"].strip()
+        return rewritten if rewritten else question
+    except Exception as e:
+        logger.warning("Query rewriting failed, using original question: %s", e)
+        return question
+
+
 def generate_answer(
     question: str,
     chunks: list[dict],
     history: list[dict] | None = None,
 ) -> dict:
     """
-    Call Gemini with the question + retrieved passages + optional conversation history.
+    Call local LLM with the question + retrieved passages + optional conversation history.
     Returns parsed {answer, found, sources} dict.
 
     history: list of {question, answer} dicts ordered oldest → newest (max HISTORY_WINDOW turns)
     """
-    client = _get_client()
+    llm = _get_llm()
     context = _build_context(chunks)
 
     parts: list[str] = []
@@ -125,48 +227,38 @@ def generate_answer(
     parts.append(context)
     parts.append(f"QUESTION: {question}")
 
-    prompt = "\n\n".join(parts)
+    user_content = "\n\n".join(parts)
 
-    for attempt in range(_MAX_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                    max_output_tokens=2048,
-                ),
-            )
-            raw = response.text.strip()
-            result = json.loads(raw)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
 
-            return {
-                "answer": result.get("answer", ""),
-                "found": bool(result.get("found", False)),
-                "sources": result.get("sources", []),
-            }
+    try:
+        grammar = LlamaGrammar.from_json_schema(json.dumps(_JSON_SCHEMA))
+        response = llm.create_chat_completion(
+            messages=messages,
+            grammar=grammar,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+            stream=False,
+        )
+        raw = response["choices"][0]["message"]["content"].strip()
+        result = _repair_json(raw)
 
-        except json.JSONDecodeError as e:
-            logger.error("Gemini returned non-JSON: %s", e)
-            raise RuntimeError(f"LLM returned malformed JSON: {e}") from e
+        return {
+            "answer": result.get("answer", ""),
+            "found": bool(result.get("found", False)),
+            "sources": result.get("sources", []),
+        }
 
-        except genai_errors.ClientError as e:
-            if _is_retryable(e) and attempt < _MAX_RETRIES - 1:
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)
-                logger.warning(
-                    "Gemini 503 on attempt %d/%d — retrying in %.1fs",
-                    attempt + 1, _MAX_RETRIES, delay,
-                )
-                time.sleep(delay)
-            else:
-                logger.error("Gemini API client error: %s", e)
-                raise RuntimeError(f"LLM unavailable: {e}") from e
+    except ValueError as e:
+        logger.error("LLM returned malformed JSON: %s", e)
+        raise RuntimeError(f"LLM returned malformed JSON: {e}") from e
 
-        except Exception as e:
-            logger.error("Gemini generation error: %s", e)
-            raise RuntimeError(f"LLM error: {e}") from e
+    except Exception as e:
+        logger.error("LLM generation error: %s", e)
+        raise RuntimeError(f"LLM error: {e}") from e
 
 
 # ── Streaming ─────────────────────────────────────────────────────────────────
@@ -188,55 +280,43 @@ def stream_answer(
         {"type": "done",  "found": bool} — final sentinel with found status
 
     The caller is responsible for building sources from retrieved chunks.
-    Raises RuntimeError on Gemini API failure.
+    Raises RuntimeError on LLM failure.
     """
-    from typing import Generator  # local import avoids circular issues
-
-    client = _get_client()
+    llm = _get_llm()
 
     parts: list[str] = []
     if history:
         parts.append(_build_history_block(history))
     parts.append(_build_context(chunks))
     parts.append(f"QUESTION: {question}")
-    prompt = "\n\n".join(parts)
+    user_content = "\n\n".join(parts)
 
-    raw_stream = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            raw_stream = client.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=STREAM_SYSTEM_PROMPT,
-                    temperature=0.0,
-                    max_output_tokens=2048,
-                ),
-            )
-            break  # stream opened successfully
-        except genai_errors.ClientError as e:
-            if _is_retryable(e) and attempt < _MAX_RETRIES - 1:
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)
-                logger.warning(
-                    "Gemini 503 on attempt %d/%d — retrying in %.1fs",
-                    attempt + 1, _MAX_RETRIES, delay,
-                )
-                time.sleep(delay)
-            else:
-                logger.error("Gemini stream client error: %s", e)
-                raise RuntimeError(f"LLM unavailable: {e}") from e
-        except Exception as e:
-            logger.error("Gemini stream error: %s", e)
-            raise RuntimeError(f"LLM error: {e}") from e
+    messages = [
+        {"role": "system", "content": STREAM_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    try:
+        raw_stream = llm.create_chat_completion(
+            messages=messages,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+            stream=True,
+        )
+    except Exception as e:
+        logger.error("LLM stream error: %s", e)
+        raise RuntimeError(f"LLM error: {e}") from e
 
     try:
         buffer = ""
         yielded_any = False
 
-        for raw in raw_stream:
-            if not raw.text:
+        for chunk in raw_stream:
+            delta = chunk["choices"][0].get("delta", {})
+            token = delta.get("content") or ""
+            if not token:
                 continue
-            buffer += raw.text
+            buffer += token
 
             # Hold back enough chars to detect the NOT_FOUND sentinel at any split point.
             # Safe portion: everything except the last SENTINEL_LEN chars.
@@ -249,7 +329,7 @@ def stream_answer(
         # Flush remaining buffer after stream ends
         if buffer:
             if buffer.strip() == _NOT_FOUND_SENTINEL:
-                # Gemini said not found — discard, found stays False
+                # LLM said not found — discard, found stays False
                 pass
             else:
                 yielded_any = True
@@ -259,10 +339,6 @@ def stream_answer(
         logger.info("Stream done — found=%s", found)
         yield {"type": "done", "found": found}
 
-    except genai_errors.ClientError as e:
-        logger.error("Gemini stream client error: %s", e)
-        raise RuntimeError(f"LLM unavailable: {e}") from e
-
     except Exception as e:
-        logger.error("Gemini stream error: %s", e)
+        logger.error("LLM stream error: %s", e)
         raise RuntimeError(f"LLM error: {e}") from e

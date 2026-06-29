@@ -2,9 +2,9 @@
 # Document-RAG: Technical Design Document
 
 **Project**: Document-RAG
-**Version**: Milestone 7
+**Version**: Milestone 8
 **Author**: Raahul G
-**Date**: May 2026
+**Date**: June 2026
 
 ---
 
@@ -24,25 +24,28 @@
    - 6.6 [Combined Scoring](#66-combined-scoring)
    - 6.7 [Dynamic Chunk Selection](#67-dynamic-chunk-selection)
 7. [Answer Generation](#7-answer-generation)
-8. [Snippet Rendering & Highlighting](#8-snippet-rendering--highlighting)
-9. [Streaming Architecture](#9-streaming-architecture)
-10. [Frontend Architecture](#10-frontend-architecture)
-11. [API Reference](#11-api-reference)
-12. [End-to-End Flow](#12-end-to-end-flow)
-13. [Performance Characteristics](#13-performance-characteristics)
-14. [Configuration & Environment](#14-configuration--environment)
+8. [Local LLM — Phi-4-mini via llama-cpp-python](#8-local-llm--phi-4-mini-via-llama-cpp-python)
+9. [Conversation Memory & Query Rewriting](#9-conversation-memory--query-rewriting)
+10. [Snippet Rendering & Highlighting](#10-snippet-rendering--highlighting)
+11. [Streaming Architecture](#11-streaming-architecture)
+12. [Frontend Architecture](#12-frontend-architecture)
+13. [API Reference](#13-api-reference)
+14. [End-to-End Flow](#14-end-to-end-flow)
+15. [Performance Characteristics](#15-performance-characteristics)
+16. [Configuration & Environment](#16-configuration--environment)
 
 ---
 
 ## 1. Project Overview
 
-Document-RAG is a locally-hosted Retrieval-Augmented Generation (RAG) system. Users upload PDF or DOCX documents and ask natural-language questions. The system retrieves only the most relevant passages from those documents, passes them to a Gemini LLM, and returns a grounded answer — meaning the model is explicitly instructed to cite only what appears in the uploaded documents, never its training knowledge.
+Document-RAG is a fully local, offline-capable Retrieval-Augmented Generation (RAG) system. Users upload PDF or DOCX documents and ask natural-language questions. The system retrieves only the most relevant passages from those documents, passes them to a local LLM running in-process, and returns a grounded answer — meaning the model is explicitly instructed to cite only what appears in the uploaded documents, never its training knowledge.
 
-The system is designed around three core principles:
+The system is designed around four core principles:
 
 - **Precision over recall at generation time** — only genuinely relevant chunks reach the LLM, not a fixed five chunks regardless of quality.
 - **Transparency** — every answer includes source citations that link back to the exact PDF page with a yellow highlight showing the cited passage.
-- **Local-first** — embeddings, vector storage, BM25, and reranking all run in-process. Only Gemini calls leave the machine.
+- **Fully local** — embeddings, vector storage, BM25, reranking, and answer generation all run in-process. No data leaves the machine and no API key is required.
+- **Coherent multi-turn conversation** — session history is persisted in SQLite and used to rewrite anaphoric queries before retrieval, ensuring follow-up questions like "What about Germany?" retrieve the right passages even when the entity was only named in a prior turn.
 
 ---
 
@@ -66,18 +69,20 @@ The system is designed around three core principles:
 │  │                                                  │   │
 │  │  Ingestion                  Retrieval            │   │
 │  │  ─────────                  ─────────            │   │
-│  │  Parse PDF/DOCX             Embed query          │   │
-│  │  Detect headings            Vector search        │   │
-│  │  Chunk (overlap)            BM25 search          │   │
-│  │  Embed chunks               Merge + dedupe       │   │
-│  │  Store in ChromaDB          Gate 1 check         │   │
-│  │  Store in SQLite            Cross-encoder rank   │   │
-│  │  Rebuild BM25               Dynamic selection    │   │
+│  │  Parse PDF/DOCX             Load history         │   │
+│  │  Detect headings            Rewrite query        │   │
+│  │  Chunk (overlap)            Embed query          │   │
+│  │  Embed chunks               Vector search        │   │
+│  │  Store in ChromaDB          BM25 search          │   │
+│  │  Store in SQLite            Merge + dedupe       │   │
+│  │  Rebuild BM25               Gate 1 check         │   │
+│  │                             Cross-encoder rank   │   │
+│  │                             Dynamic selection    │   │
 │  │                                                  │   │
 │  │  Generation                 Snippet              │   │
 │  │  ──────────                 ───────              │   │
 │  │  Build prompt               Find text on page    │   │
-│  │  Gemini 2.5-Flash           Highlight y-band     │   │
+│  │  Phi-4-mini (llama-cpp)     Highlight y-band     │   │
 │  │  Streaming SSE              Render PNG           │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                         │
@@ -105,7 +110,8 @@ The system is designed around three core principles:
 | Keyword search | rank-bm25 | ≥ 0.2.2 | In-memory BM25Okapi |
 | PDF parsing | PyMuPDF (fitz) | ≥ 1.27 | Text extraction + rendering |
 | DOCX parsing | python-docx | ≥ 1.2 | Paragraph / style extraction |
-| LLM | Google Gemini 2.5-Flash | via google-genai ≥ 1.73.1 | Answer generation |
+| LLM runtime | llama-cpp-python | ≥ 0.3.0 | Local GGUF model inference |
+| LLM model | Phi-4-mini-instruct Q4_K_M | 3.8B / ~2.5 GB | Answer generation (fully local) |
 | Config | pydantic-settings | ≥ 2.0 | Environment variable binding |
 | Async files | aiofiles | ≥ 24.1 | Non-blocking upload writes |
 
@@ -119,14 +125,15 @@ The system is designed around three core principles:
 | Icons | Material Symbols | (CDN) | Icon set |
 | Portal | react-dom/createPortal | 19.2 | Snippet modal outside DOM tree |
 
-### Embedding & Reranking Models
+### Embedding, Reranking & Generation Models
 
-| Model | Params | Dimension | Purpose |
+| Model | Params | Size | Purpose |
 |---|---|---|---|
-| nomic-ai/nomic-embed-text-v1.5 | ~137M | 768 | Semantic embeddings |
-| cross-encoder/ms-marco-MiniLM-L-6-v2 | ~22M | — | Passage relevance logits |
+| nomic-ai/nomic-embed-text-v1.5 | ~137M | ~550 MB | Semantic embeddings |
+| cross-encoder/ms-marco-MiniLM-L-6-v2 | ~22M | ~85 MB | Passage relevance logits |
+| microsoft/Phi-4-mini-instruct Q4_K_M | 3.8B | ~2.5 GB | Local answer generation |
 
-Both models run locally via sentence-transformers, downloaded on first use and cached in the model store.
+All models run locally. The embedding and reranking models are downloaded via sentence-transformers on first use and cached. The Phi-4-mini GGUF file is downloaded once via `huggingface-cli` and placed in `./models/`.
 
 ---
 
@@ -286,7 +293,7 @@ The chunker avoids two common failure modes:
 
 ## 6. The RAG Retrieval System
 
-The retrieval system is the core of the product. It runs a nine-step hybrid pipeline on every query and returns between 1 and 5 chunks.
+The retrieval system is the core of the product. It runs a nine-step hybrid pipeline on every query and returns between 1 and 5 chunks. Retrieval always operates on the **rewritten query** (see Section 9), not the raw user question — this ensures anaphoric follow-ups retrieve the right passages.
 
 ```
 retrieve(query, doc_ids=None)
@@ -365,9 +372,9 @@ Before incurring cross-encoder cost, a lightweight coverage check rejects querie
 | `top_vector_sim < 0.25` AND `bm25_hits == 0` | Return `([], False)` |
 | Any other combination | Pass — continue pipeline |
 
-`coverage_ok = False` is the signal for the router to return "not found" without calling Gemini at all, saving latency and quota.
+`coverage_ok = False` is the signal for the router to return "not found" without calling the LLM at all, saving latency.
 
-The threshold `0.25` is deliberately permissive — it only blocks genuinely off-topic queries (e.g. asking about cooking recipes when the corpus is a software manual). Everything else is passed to the cross-encoder and ultimately to Gemini's own judgement (Gate 2).
+The threshold `0.25` is deliberately permissive — it only blocks genuinely off-topic queries (e.g. asking about cooking recipes when the corpus is a software manual). Everything else is passed to the cross-encoder and ultimately to the LLM's own judgement (Gate 2).
 
 ### 6.5 Cross-Encoder Reranking
 
@@ -423,7 +430,7 @@ Chunks are sorted descending by `final_score`.
 
 ### 6.7 Dynamic Chunk Selection
 
-Earlier versions passed a fixed five chunks to Gemini regardless of score distribution. This wastes context when only one passage is genuinely relevant (the LLM sees four low-quality passages that may introduce confabulation).
+Earlier versions passed a fixed five chunks to the LLM regardless of score distribution. This wastes context when only one passage is genuinely relevant (the LLM sees four low-quality passages that may introduce confabulation).
 
 The current approach uses a **score-ratio cutoff**: a chunk is included only if its score is at least 50% of the top chunk's score.
 
@@ -477,9 +484,9 @@ Revenue for FY2024 was $4.2 billion...
 QUESTION: What was the revenue growth in FY2024?
 ```
 
-Conversation history (max 5 prior turns) is prepended with an explicit instruction that it is context-only and must not be used as a factual source.
+Conversation history (max 5 prior turns) is prepended with an explicit instruction that it is context-only and must not be used as a factual source. See Section 9 for how history is also used to rewrite the query before retrieval.
 
-### 7.2 Gemini Instruction
+### 7.2 LLM Instruction
 
 The system prompt strictly enforces document grounding:
 
@@ -488,9 +495,11 @@ The system prompt strictly enforces document grounding:
 - Each `sources` entry must include `doc_name`, `page`, `passage_index`, `section_title`, and the exact `text` of the cited passage.
 - Temperature is set to `0.0` for reproducible, factual responses.
 
+The non-streaming path additionally applies grammar-constrained generation via `LlamaGrammar.from_json_schema()`, which forces the model to output structurally valid JSON without any need for post-hoc repair in the common case.
+
 ### 7.3 Source Text Restoration
 
-Gemini often paraphrases the `text` field in its JSON output even though it is instructed to return it verbatim. This breaks the snippet highlighter which needs to search for the exact original text in the PDF.
+The LLM often paraphrases the `text` field in its JSON output even though it is instructed to return it verbatim. This breaks the snippet highlighter which needs to search for the exact original text in the PDF.
 
 The query router performs a restoration step after generation:
 
@@ -510,11 +519,281 @@ This ensures the text stored in the database and returned to the frontend is alw
 
 ---
 
-## 8. Snippet Rendering & Highlighting
+## 8. Local LLM — Phi-4-mini via llama-cpp-python
+
+### 8.1 Model Selection
+
+The system uses **Phi-4-mini-instruct** (Microsoft, 3.8B parameters) quantised to **Q4_K_M** GGUF format. This quantisation level applies 4-bit mixed precision with a K-quant algorithm, preserving accuracy-critical weights at higher precision while aggressively compressing the rest.
+
+| Property | Value |
+|---|---|
+| Parameters | 3.8B |
+| File size | ~2.5 GB |
+| RAM at runtime | ~5 GB (model + KV cache at 8k context) |
+| Context window | 128,000 tokens |
+| Quantisation | Q4_K_M (4-bit mixed, K-quant) |
+
+**Why Phi-4-mini over alternatives:**
+
+| Model | Params | JSON reliability | Structured data | Selected |
+|---|---|---|---|---|
+| Phi-4-mini Q4_K_M | 3.8B | Good | Very Good | Yes |
+| Qwen2.5-3B Q4_K_M | 3B | Moderate | Good | No |
+
+Phi-4-mini's training emphasis on structured and tabular data reasoning makes it well-suited for documents containing tables, financial figures, and multi-column layouts — contexts where a model must track relationships between cells and rows without confabulating.
+
+**One-time model download:**
+```bash
+huggingface-cli download microsoft/Phi-4-mini-instruct-gguf \
+  Phi-4-mini-instruct-Q4_K_M.gguf --local-dir ./models/
+```
+
+### 8.2 Serving Architecture
+
+The model runs **embedded inside the FastAPI process** via `llama-cpp-python`, following the same lazy-singleton pattern used by the embedding and reranking models:
+
+```python
+_llm: Llama | None = None
+
+def _get_llm() -> Llama:
+    global _llm
+    if _llm is None:
+        _llm = Llama(
+            model_path=settings.llm_model_path,
+            n_ctx=settings.llm_n_ctx,       # default 8192
+            n_threads=settings.llm_n_threads, # default 4
+            n_gpu_layers=settings.llm_n_gpu_layers,  # 0 = CPU, -1 = all GPU
+            verbose=False,
+        )
+    return _llm
+```
+
+The model is loaded on first request. To eliminate cold-start latency on the first user query, the FastAPI `lifespan` function can call `_get_llm()` at startup.
+
+No sidecar process (Ollama, vllm, etc.) is required. The model runs in the same process as the rest of the application, which simplifies both local development and Docker deployment.
+
+### 8.3 Grammar-Constrained JSON Generation
+
+The non-streaming endpoint requires structured JSON output (`{answer, found, sources[]}`). Rather than relying purely on prompt instructions, the system uses **grammar-constrained decoding** — the GGUF runtime enforces that every token it samples is valid given a JSON schema:
+
+```python
+grammar = LlamaGrammar.from_json_schema(json.dumps(_JSON_SCHEMA))
+
+response = llm.create_chat_completion(
+    messages=messages,
+    grammar=grammar,
+    temperature=0.0,
+    max_tokens=settings.llm_max_tokens,
+    stream=False,
+)
+```
+
+Under grammar constraints, the sampler masks out any token that would violate the schema at the current position. The model cannot produce a stray comma, a missing brace, or an unexpected field. This eliminates an entire class of parse failures.
+
+**Important**: grammar constraints and `stream=True` cannot be used simultaneously in llama-cpp-python. The streaming path therefore does not use grammar constraints and instead uses the NOT_FOUND sentinel approach (see Section 11.2).
+
+### 8.4 JSON Repair Fallback
+
+In rare cases where grammar constraints slip (edge cases in quantised models), `_repair_json()` attempts three recovery strategies before raising:
+
+```python
+def _repair_json(raw: str) -> dict:
+    # 1. Direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Strip markdown fences (```json ... ```)
+    stripped = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Regex extract first {...} block
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not parse JSON from LLM output: {raw[:200]!r}")
+```
+
+### 8.5 GPU Acceleration
+
+The `LLM_N_GPU_LAYERS` setting controls how many transformer layers are offloaded to GPU:
+
+| Value | Effect |
+|---|---|
+| `0` | CPU-only inference (default) |
+| `N` | Offload N layers to GPU (partial GPU) |
+| `-1` | Offload all layers (full GPU) |
+
+With a GPU that has ≥ 6 GB VRAM, setting `LLM_N_GPU_LAYERS=-1` reduces generation latency from ~30–60 s to ~2–5 s for a full response.
+
+### 8.6 RAM Budget
+
+| Component | RAM |
+|---|---|
+| nomic-embed-text-v1.5 | ~550 MB |
+| ms-marco-MiniLM-L-6-v2 | ~85 MB |
+| Phi-4-mini Q4_K_M (CPU) | ~5 GB |
+| ChromaDB (10k chunks) | ~200 MB |
+| BM25 index (10k chunks) | ~50 MB |
+| **Total (CPU, 10k chunks)** | **~6 GB** |
+
+An 8 GB machine is sufficient for CPU-only operation with a moderate corpus. A 16 GB machine or a GPU with ≥ 6 GB VRAM is recommended for comfortable headroom.
+
+---
+
+## 9. Conversation Memory & Query Rewriting
+
+### 9.1 Session Persistence
+
+Every conversation belongs to a **Session**. Sessions and their messages are persisted in SQLite, so chat history survives server restarts. Each session is created automatically on the first question and titled from its first 60 characters.
+
+```
+Session
+  id, title, created_at, updated_at
+
+Message
+  id, session_id, question, answer, sources_json, created_at
+```
+
+When a `session_id` is provided in the request, the router loads the **last 5 turns** (the history window) ordered oldest-to-newest and passes them to both the query rewriter and the answer generator.
+
+```python
+HISTORY_WINDOW = 5
+
+recent = (
+    db.query(Message)
+    .filter(Message.session_id == payload.session_id)
+    .order_by(Message.created_at.desc())
+    .limit(HISTORY_WINDOW)
+    .all()
+)
+history = [
+    {"question": m.question, "answer": m.answer}
+    for m in reversed(recent)
+    if m.answer  # skip gate-1 misses with no answer
+]
+```
+
+### 9.2 The Two-Layer Memory Problem
+
+A naive multi-turn RAG system passes history only to the answer generator. This creates a split: the LLM sees the context and can resolve pronouns in its *answer*, but retrieval runs on the raw question and retrieves the wrong passages.
+
+```
+Turn 1: "What are the revenue figures for France?"
+Turn 2: "What about Germany?"
+
+Naive retrieval query → "What about Germany?"
+  → vector search finds weak matches (no "revenue" in query)
+  → likely Gate 1 failure → "I could not find an answer"
+```
+
+The system addresses this with a dedicated **query rewriting** step that runs before retrieval on every turn where history is available.
+
+### 9.3 Query Rewriting
+
+`rewrite_query(question, history)` calls the local LLM with a focused prompt to produce a fully self-contained query. It uses the same model instance (`_get_llm()`) but with a small token budget (`max_tokens=128`) to keep the overhead minimal.
+
+**System prompt:**
+```
+You are a search query rewriter for a document retrieval system.
+
+Given a conversation history and a follow-up question, rewrite the question into a
+fully self-contained search query that can be understood without any prior context.
+
+Rules:
+- Resolve all pronouns and references (it, that, they, the previous one, etc.)
+  using the conversation history
+- Include key entities, topics, and concepts from previous turns if referenced
+- Output ONLY the rewritten query — no explanation, no preamble, no quotes
+- If the question is already fully self-contained, output it unchanged
+```
+
+**User message format:**
+```
+Conversation history:
+User: What are the revenue figures for France?
+Assistant: France reported €52.3B in revenue for FY2024...
+
+Follow-up question: What about Germany?
+
+Rewritten query:
+```
+
+**Output:** `"What are the revenue figures for Germany?"`
+
+This rewritten query is then passed to `retrieval.retrieve()`, which now searches for a semantically rich, self-contained phrase.
+
+### 9.4 Information Separation
+
+A critical design constraint: the rewritten query is used **only for retrieval**. Answer generation always receives the **original question** and the full history:
+
+```
+retrieve(rewritten_query)   ← anaphora resolved for embedding/BM25
+generate_answer(original_question, chunks, history)  ← LLM gets full context
+```
+
+This separation prevents the rewrite from corrupting the conversational tone of the answer. If the user asked "What about Germany?", the LLM answers that question — not the expanded version — using the correctly retrieved passages.
+
+### 9.5 Execution Order
+
+The query flow was restructured so history is loaded before retrieval:
+
+```
+Old order:
+  retrieve(raw_q) → gate1 → load_history → generate(raw_q, history)
+
+New order:
+  load_history → rewrite(raw_q, history) → retrieve(rewritten_q) → generate(raw_q, history)
+```
+
+Both the non-streaming (`POST /api/query`) and streaming (`POST /api/query/stream`) endpoints follow this order.
+
+### 9.6 Graceful Degradation
+
+`rewrite_query` is designed to never break the pipeline:
+
+| Condition | Behaviour |
+|---|---|
+| No history (first turn) | Returns original question immediately, no LLM call |
+| LLM raises an exception | Logs a warning, returns original question |
+| LLM returns empty string | Returns original question |
+| Question is self-contained | LLM outputs it unchanged |
+
+The rewriter failing is equivalent to the old behaviour — retrieval proceeds on the raw question. Answers may be less accurate for anaphoric queries, but the system never errors out.
+
+### 9.7 History in Answer Generation
+
+In addition to retrieval, history is passed to the generation LLM in a labelled block:
+
+```
+CONVERSATION HISTORY (for context only — do not answer from this):
+
+Turn 1:
+  User: What are the revenue figures for France?
+  Assistant: France reported €52.3B...
+
+Turn 2:
+  User: What about Germany?
+  Assistant: [current generation]
+```
+
+The system prompt instructs the model that this block is context only — it resolves pronouns in the question but the answer must still be grounded in the retrieved passages, not in the history.
+
+---
+
+## 10. Snippet Rendering & Highlighting
 
 When a user clicks a citation pill, the backend renders the exact PDF page as a PNG with the cited passage highlighted in yellow.
 
-### 8.1 Architecture
+### 10.1 Architecture
 
 ```
 GET /api/snippets/render
@@ -542,7 +821,7 @@ GET /api/snippets/render
   Cache-Control: max-age=3600
 ```
 
-### 8.2 Text Search on a PDF Page
+### 10.2 Text Search on a PDF Page
 
 The central challenge is locating a text passage inside a PDF page's word list. PDFs do not store text as plain strings — they store glyph streams, and text is reconstructed by the PDF reader. This introduces several obstacles:
 
@@ -566,7 +845,7 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 ```
 
-### 8.3 Start and End Anchor Search
+### 10.3 Start and End Anchor Search
 
 Instead of searching for the entire passage (which may span pages and be unreliable), the system identifies **start** and **end anchors** — short, reliable phrases extracted from the passage boundaries.
 
@@ -593,7 +872,7 @@ for page_offset in PAGE_SEARCH_WINDOW:
         break
 ```
 
-### 8.4 Y-Band Highlighting
+### 10.4 Y-Band Highlighting
 
 Once start and end anchors are located, their Y-coordinates define a horizontal band on the page. All PDF words whose bounding box falls within this band are collected and highlighted.
 
@@ -627,7 +906,7 @@ estimated_lines = len(passage_text) / _CHARS_PER_LINE
 end_y = start_y + (estimated_lines * median_line_height)
 ```
 
-### 8.5 Multi-Column Detection
+### 10.5 Multi-Column Detection
 
 Many PDF documents use two-column layouts. If the highlight band is applied naively, it may capture words from both columns even though the passage is in only one.
 
@@ -644,7 +923,7 @@ is_single_column = any(
 - If any word crosses the centre: **single-column** — no filtering applied.
 - If no word crosses: **multi-column** — words are constrained to the column containing the start anchor (left half or right half of the page).
 
-### 8.6 Rendering
+### 10.6 Rendering
 
 PyMuPDF draws a yellow `Highlight` annotation over each word's bounding rectangle, then renders the page to a PNG at 1.5× resolution for readability:
 
@@ -659,7 +938,7 @@ pix = page.get_pixmap(matrix=mat)
 return pix.tobytes("png")
 ```
 
-### 8.7 Caching
+### 10.7 Caching
 
 Rendered snippets are expensive (~500ms–2s). An LRU cache keyed on `(pdf_path, page, text)` stores up to 50 entries (~2.75 MB):
 
@@ -672,9 +951,9 @@ The cache is invalidated when a document is deleted.
 
 ---
 
-## 9. Streaming Architecture
+## 11. Streaming Architecture
 
-### 9.1 Server-Sent Events (SSE)
+### 11.1 Server-Sent Events (SSE)
 
 The streaming endpoint uses SSE — a one-way HTTP persistent connection where the server pushes newline-delimited JSON events:
 
@@ -691,9 +970,9 @@ data: {"type": "token", "text": "was $4.2 billion."}
 data: {"type": "done", "found": true, "answer": "...", "sources": [...], "session_id": 7}
 ```
 
-### 9.2 NOT_FOUND Sentinel
+### 11.2 NOT_FOUND Sentinel
 
-Gemini in streaming mode cannot return structured JSON (streaming and `response_mime_type="application/json"` are mutually exclusive). Instead, the system prompt instructs Gemini to output the literal string `NOT_FOUND` if it cannot answer from the passages.
+The local LLM in streaming mode cannot use grammar constraints (streaming and `grammar=` are mutually exclusive in llama-cpp-python). Instead, the stream system prompt instructs the model to output the literal string `NOT_FOUND` if it cannot answer from the passages.
 
 To detect this sentinel without mistakenly cutting it from a valid answer, the router buffers the last 8 characters of the stream. On each incoming chunk, only the "safe" portion (everything except the buffer) is forwarded to the client. At stream end, the full buffer is checked:
 
@@ -702,15 +981,16 @@ SENTINEL = "NOT_FOUND"
 HOLD_BACK = len(SENTINEL)  # = 8
 
 buffer = ""
-for chunk in gemini_stream:
-    buffer += chunk
+for chunk in llm_stream:
+    token = chunk["choices"][0]["delta"].get("content") or ""
+    buffer += token
     safe = buffer[:-HOLD_BACK]
     if safe:
         yield token_event(safe)
     buffer = buffer[-HOLD_BACK:]
 
 # Stream ended — inspect buffer
-if SENTINEL in buffer:
+if buffer.strip() == SENTINEL:
     found = False
     # Do NOT yield the sentinel to the client
 else:
@@ -719,9 +999,9 @@ else:
         yield token_event(buffer)
 ```
 
-### 9.3 Gate 1 in Streaming Mode
+### 11.3 Gate 1 in Streaming Mode
 
-The retrieval gate check runs before the SSE stream opens. If Gate 1 fails (no coverage), the endpoint returns a single `"done"` event with `found=false` immediately — no Gemini call is made:
+The retrieval gate check runs before the SSE stream opens. If Gate 1 fails (no coverage), the endpoint returns a single `"done"` event with `found=false` immediately — no LLM call is made:
 
 ```
 data: {"type": "done", "found": false, "answer": "", "sources": [], "session_id": null}
@@ -729,9 +1009,9 @@ data: {"type": "done", "found": false, "answer": "", "sources": [], "session_id"
 
 ---
 
-## 10. Frontend Architecture
+## 12. Frontend Architecture
 
-### 10.1 Component Tree
+### 12.1 Component Tree
 
 ```
 App
@@ -747,7 +1027,7 @@ App
    view === "settings" → Placeholder
 ```
 
-### 10.2 Streaming Message Handling
+### 12.2 Streaming Message Handling
 
 ```javascript
 const res = await fetch("/api/query/stream", { method: "POST", body: JSON.stringify(payload) })
@@ -786,7 +1066,7 @@ while (true) {
 }
 ```
 
-### 10.3 Thinking Phase Animation
+### 12.3 Thinking Phase Animation
 
 While the streaming bubble exists but has no text yet (waiting for first token), four cycling states are shown with icons and animated dots:
 
@@ -800,7 +1080,7 @@ const THINKING_PHASES = [
 // Phase advances every 1600ms via setInterval
 ```
 
-### 10.4 Snippet Modal
+### 12.4 Snippet Modal
 
 Clicking a citation pill opens a full-screen modal (via `createPortal` to `document.body`, ensuring correct z-index stacking regardless of parent DOM context):
 
@@ -826,7 +1106,7 @@ The Copy Image button writes the PNG to the clipboard using the Clipboard API (f
 
 ---
 
-## 11. API Reference
+## 13. API Reference
 
 | Method | Path | Description |
 |---|---|---|
@@ -844,7 +1124,7 @@ The Copy Image button writes the PNG to the clipboard using the Clipboard API (f
 
 ---
 
-## 12. End-to-End Flow
+## 14. End-to-End Flow
 
 ### Upload Flow
 
@@ -865,16 +1145,17 @@ User drops PDF
 ```
 User types question, hits Enter
   → POST /api/query/stream
-  → embed_query(question)
+  → load_history(session_id, max 5 turns)
+  → rewrite_query(question, history)          ← anaphora resolved
+  → embed_query(rewritten_query)
   → vector_search(query_vec, top 15)
-  → bm25_search(question, top 15)
+  → bm25_search(rewritten_query, top 15)
   → Gate 1 check
   → merge + deduplicate
-  → cross_encoder_score(query, candidates)
+  → cross_encoder_score(rewritten_query, candidates)
   → combined_score = 0.5v + 0.3b + 0.2c
   → dynamic_select (score ratio 0.5)
-  → load_history(session_id, max 5 turns)
-  → stream Gemini 2.5-Flash
+  → stream Phi-4-mini (llama-cpp-python)      ← original question + history + chunks
   → buffer NOT_FOUND detection
   → SSE token events → frontend appends tokens
   → SSE done event → frontend shows citation pills
@@ -905,19 +1186,23 @@ User clicks citation pill
 
 ---
 
-## 13. Performance Characteristics
+## 15. Performance Characteristics
 
-### Query Latency Breakdown
+### Query Latency Breakdown (CPU-only)
 
 | Stage | Typical Duration |
 |---|---|
+| History load (SQLite) | < 5ms |
+| Query rewriting (Phi-4-mini, CPU) | 5–15s (first turn skipped) |
 | Query embedding (nomic) | 20–50ms |
 | ChromaDB vector search (top 15) | 10–50ms |
 | BM25 search (in-memory, full corpus) | < 1ms |
 | Cross-encoder reranking (15–30 pairs) | 80–200ms |
-| Gemini first token (streaming) | 500ms–1.5s |
-| Gemini full response | 1–4s |
-| **Total to first token** | **~700ms–1.8s** |
+| Phi-4-mini first token (CPU, streaming) | 10–20s |
+| Phi-4-mini full response (CPU) | 30–90s |
+| **Total to first token (CPU)** | **~10–20s** |
+
+> **GPU note**: With `LLM_N_GPU_LAYERS=-1` and ≥ 6 GB VRAM, generation first token drops to ~1–3s and full response to ~5–15s. Query rewriting similarly drops to ~1–3s.
 
 ### Ingestion Throughput
 
@@ -931,20 +1216,30 @@ User clicks citation pill
 
 | Component | Memory |
 |---|---|
-| nomic-embed-text-v1.5 model | ~550MB |
-| ms-marco-MiniLM-L-6-v2 model | ~85MB |
-| ChromaDB (10k chunks, in-process) | ~200MB |
-| BM25 index (10k chunks) | ~50MB |
-| Snippet LRU cache (50 entries) | ~2.75MB |
+| nomic-embed-text-v1.5 model | ~550 MB |
+| ms-marco-MiniLM-L-6-v2 model | ~85 MB |
+| Phi-4-mini Q4_K_M (CPU, 8k context) | ~5 GB |
+| ChromaDB (10k chunks, in-process) | ~200 MB |
+| BM25 index (10k chunks) | ~50 MB |
+| Snippet LRU cache (50 entries) | ~2.75 MB |
+| **Total (CPU, 10k chunks)** | **~6 GB** |
 
 ---
 
-## 14. Configuration & Environment
+## 16. Configuration & Environment
 
 ### Environment Variables (`.env`)
 
 ```bash
-GEMINI_API_KEY=AIza...         # required
+# Local LLM
+LLM_MODEL_PATH=./models/Phi-4-mini-instruct-Q4_K_M.gguf
+LLM_N_CTX=8192           # context window tokens
+LLM_N_THREADS=4          # CPU threads for inference
+LLM_N_GPU_LAYERS=0       # 0 = CPU only, -1 = all layers on GPU
+LLM_TEMPERATURE=0.0      # 0.0 for deterministic output
+LLM_MAX_TOKENS=2048      # maximum tokens in response
+
+# Storage
 DATABASE_URL=sqlite:///./data/app.db     # optional, default shown
 CHROMA_PATH=./data/chroma                # optional, default shown
 UPLOAD_DIR=./uploads                     # optional, default shown
@@ -956,26 +1251,27 @@ UPLOAD_DIR=./uploads                     # optional, default shown
 Document-RAG/
 ├── backend/
 │   ├── main.py                  # FastAPI app, lifespan, routers
-│   ├── config.py                # pydantic-settings config
+│   ├── config.py                # pydantic-settings config (LLM_* fields)
 │   ├── database.py              # SQLAlchemy engine + session
 │   ├── models.py                # ORM models (Document, Chunk, Session, Message)
 │   ├── routers/
 │   │   ├── documents.py         # upload, progress SSE, list, delete
-│   │   ├── query.py             # non-stream + stream Q&A
+│   │   ├── query.py             # non-stream + stream Q&A, rewrite → retrieve order
 │   │   ├── sessions.py          # session + message history
 │   │   └── snippets.py          # PDF snippet rendering
 │   ├── services/
 │   │   ├── ingestion.py         # parse → chunk → embed → store
 │   │   ├── retrieval.py         # hybrid retrieval pipeline
-│   │   ├── generation.py        # Gemini prompt + streaming
+│   │   ├── generation.py        # local LLM: rewrite_query, generate_answer, stream_answer
 │   │   ├── embeddings.py        # nomic embed_query / embed_documents
 │   │   ├── vectorstore.py       # ChromaDB wrapper
 │   │   ├── bm25_index.py        # BM25Okapi in-memory index
 │   │   └── snippet.py           # PDF page rendering + highlighting
 │   └── tests/
-│       ├── test_generation.py
+│       ├── test_generation.py   # rewrite_query, generate_answer unit tests
+│       ├── test_streaming.py    # stream_answer unit tests
 │       ├── test_ingestion.py
-│       ├── test_query.py
+│       ├── test_query.py        # routing integration + rewriting integration tests
 │       └── test_snippets.py
 ├── frontend/
 │   ├── src/
@@ -986,6 +1282,8 @@ Document-RAG/
 │   │   └── index.css            # global styles, scrollbar, animations
 │   ├── package.json
 │   └── vite.config.js
+├── models/                      # GGUF model files (gitignored)
+│   └── Phi-4-mini-instruct-Q4_K_M.gguf
 ├── data/                        # created at runtime
 │   ├── app.db                   # SQLite
 │   └── chroma/                  # ChromaDB persistence
@@ -997,6 +1295,10 @@ Document-RAG/
 ### Running Locally
 
 ```bash
+# Download model (one-time)
+huggingface-cli download microsoft/Phi-4-mini-instruct-gguf \
+  Phi-4-mini-instruct-Q4_K_M.gguf --local-dir ./models/
+
 # Backend
 uv sync
 uv run uvicorn backend.main:app --reload --port 8000
@@ -1008,3 +1310,12 @@ npm run dev
 ```
 
 The frontend dev server runs on `http://localhost:5173` and proxies `/api` requests to `http://localhost:8000`.
+
+### Docker
+
+```bash
+# Place model in ./models/ before building
+docker compose up --build
+```
+
+The compose file mounts `./models` as a read-only volume at `/models` inside the container. The `LLM_MODEL_PATH` env var is set to `/models/Phi-4-mini-instruct-Q4_K_M.gguf`.

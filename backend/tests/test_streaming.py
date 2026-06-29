@@ -6,7 +6,7 @@ Covers:
 - NOT_FOUND sentinel suppressed and found=False returned
 - done event always emitted as final event
 - Partial sentinel buffering (sentinel split across chunks)
-- RuntimeError raised on Gemini ClientError
+- RuntimeError raised on LLM error
 """
 from __future__ import annotations
 
@@ -27,11 +27,14 @@ def _make_chunk(text="Sample text."):
     }
 
 
-def _raw_chunk(text: str) -> MagicMock:
-    """Simulate a Gemini streaming chunk."""
-    c = MagicMock()
-    c.text = text
-    return c
+def _stream_chunk(content: str) -> dict:
+    """Simulate a llama-cpp-python streaming chunk with content."""
+    return {"choices": [{"delta": {"content": content}, "finish_reason": None}]}
+
+
+def _stream_stop() -> dict:
+    """Simulate a llama-cpp-python streaming stop chunk."""
+    return {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
 def _collect(gen) -> tuple[list[str], bool]:
@@ -47,13 +50,14 @@ def _collect(gen) -> tuple[list[str], bool]:
 
 class TestStreamAnswer:
 
-    @patch("backend.services.generation._get_client")
-    def test_normal_answer_yields_tokens_and_done(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([
-            _raw_chunk("The answer "),
-            _raw_chunk("is 42."),
+    @patch("backend.services.generation._get_llm")
+    def test_normal_answer_yields_tokens_and_done(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([
+            _stream_chunk("The answer "),
+            _stream_chunk("is 42."),
+            _stream_stop(),
         ])
 
         from backend.services.generation import stream_answer
@@ -62,12 +66,13 @@ class TestStreamAnswer:
         assert found is True
         assert "".join(tokens).strip() != ""
 
-    @patch("backend.services.generation._get_client")
-    def test_not_found_sentinel_suppressed(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([
-            _raw_chunk(_NOT_FOUND_SENTINEL),
+    @patch("backend.services.generation._get_llm")
+    def test_not_found_sentinel_suppressed(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([
+            _stream_chunk(_NOT_FOUND_SENTINEL),
+            _stream_stop(),
         ])
 
         from backend.services.generation import stream_answer
@@ -76,12 +81,13 @@ class TestStreamAnswer:
         assert found is False
         assert all(_NOT_FOUND_SENTINEL not in t for t in tokens)
 
-    @patch("backend.services.generation._get_client")
-    def test_done_always_last_event(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([
-            _raw_chunk("Some answer text here."),
+    @patch("backend.services.generation._get_llm")
+    def test_done_always_last_event(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([
+            _stream_chunk("Some answer text here."),
+            _stream_stop(),
         ])
 
         from backend.services.generation import stream_answer
@@ -89,16 +95,17 @@ class TestStreamAnswer:
 
         assert events[-1]["type"] == "done"
 
-    @patch("backend.services.generation._get_client")
-    def test_sentinel_split_across_chunks(self, mock_get_client):
+    @patch("backend.services.generation._get_llm")
+    def test_sentinel_split_across_chunks(self, mock_get_llm):
         """NOT_FOUND split as 'NOT_' and 'FOUND' should still be detected."""
         sentinel = _NOT_FOUND_SENTINEL
         mid = len(sentinel) // 2
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([
-            _raw_chunk(sentinel[:mid]),
-            _raw_chunk(sentinel[mid:]),
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([
+            _stream_chunk(sentinel[:mid]),
+            _stream_chunk(sentinel[mid:]),
+            _stream_stop(),
         ])
 
         from backend.services.generation import stream_answer
@@ -106,41 +113,40 @@ class TestStreamAnswer:
 
         assert found is False
 
-    @patch("backend.services.generation._get_client")
-    def test_history_passed_to_prompt(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([
-            _raw_chunk("Follow-up answer."),
+    @patch("backend.services.generation._get_llm")
+    def test_history_passed_to_prompt(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([
+            _stream_chunk("Follow-up answer."),
+            _stream_stop(),
         ])
         history = [{"question": "First Q", "answer": "First A"}]
 
         from backend.services.generation import stream_answer
         list(stream_answer("Follow-up Q", [_make_chunk()], history=history))
 
-        call_args = mock_client.models.generate_content_stream.call_args
-        prompt = call_args.kwargs.get("contents") or call_args.args[1]
-        assert "CONVERSATION HISTORY" in prompt
-        assert "First Q" in prompt
+        call_args = mock_llm.create_chat_completion.call_args
+        messages = call_args.kwargs.get("messages") or call_args.args[0]
+        user_content = next(m["content"] for m in messages if m["role"] == "user")
+        assert "CONVERSATION HISTORY" in user_content
+        assert "First Q" in user_content
 
-    @patch("backend.services.generation._get_client")
-    def test_client_error_raises_runtime_error(self, mock_get_client):
-        from google.genai import errors as genai_errors
-
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        err = genai_errors.ClientError("503", {"error": {"code": 503, "message": "unavailable"}})
-        mock_client.models.generate_content_stream.side_effect = err
+    @patch("backend.services.generation._get_llm")
+    def test_llm_error_raises_runtime_error(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.side_effect = RuntimeError("llama error")
 
         from backend.services.generation import stream_answer
-        with pytest.raises(RuntimeError, match="LLM unavailable"):
+        with pytest.raises(RuntimeError, match="LLM error"):
             list(stream_answer("Question?", [_make_chunk()]))
 
-    @patch("backend.services.generation._get_client")
-    def test_empty_stream_returns_not_found(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-        mock_client.models.generate_content_stream.return_value = iter([])
+    @patch("backend.services.generation._get_llm")
+    def test_empty_stream_returns_not_found(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.create_chat_completion.return_value = iter([])
 
         from backend.services.generation import stream_answer
         tokens, found = _collect(stream_answer("Question?", [_make_chunk()]))

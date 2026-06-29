@@ -36,13 +36,34 @@ def _get_or_create_session(session_id: int | None, question: str, db: Session) -
 
 @router.post("", response_model=QueryOut)
 def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
-    # 1. Retrieve — hybrid search + soft reranking
+    # 1. Load conversation history first — needed for query rewriting
+    history: list[dict] = []
+    if payload.session_id:
+        recent = (
+            db.query(Message)
+            .filter(Message.session_id == payload.session_id)
+            .order_by(Message.created_at.desc())
+            .limit(HISTORY_WINDOW)
+            .all()
+        )
+        history = [
+            {"question": m.question, "answer": m.answer}
+            for m in reversed(recent)
+            if m.answer  # skip gate-1 misses that have no answer
+        ]
+
+    # 2. Rewrite query to resolve anaphoric references before retrieval
+    retrieval_query = generation.rewrite_query(payload.question, history)
+    if retrieval_query != payload.question:
+        logger.info("Query rewritten: %r → %r", payload.question, retrieval_query)
+
+    # 3. Retrieve — hybrid search + soft reranking (uses rewritten query)
     chunks, coverage_ok = retrieval.retrieve(
-        query=payload.question,
+        query=retrieval_query,
         doc_ids=payload.doc_filter or None,
     )
 
-    # 2. Gate 1: coverage check (retrieval signals, not cross-encoder score)
+    # 4. Gate 1: coverage check (retrieval signals, not cross-encoder score)
     if not coverage_ok:
         session = _get_or_create_session(payload.session_id, payload.question, db)
         msg = Message(
@@ -60,27 +81,10 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
             session_id=session.id,
         )
 
-    # 3. Load conversation history from the current session (if any)
-    history: list[dict] = []
-    if payload.session_id:
-        recent = (
-            db.query(Message)
-            .filter(Message.session_id == payload.session_id)
-            .order_by(Message.created_at.desc())
-            .limit(HISTORY_WINDOW)
-            .all()
-        )
-        # reverse so oldest turn comes first
-        history = [
-            {"question": m.question, "answer": m.answer}
-            for m in reversed(recent)
-            if m.answer  # skip gate-1 misses that have no answer
-        ]
-        if history:
-            logger.info("Passing %d history turn(s) to Gemini for session %d", len(history), payload.session_id)
-
-    # 4. Generate answer via Gemini
-    #    Gate 2: Gemini self-checks via found:false — it decides if chunks answer the question
+    # 5. Generate answer — always uses original question (rewrite is retrieval-only)
+    #    Gate 2: LLM self-checks via found:false — it decides if chunks answer the question
+    if history:
+        logger.info("Passing %d history turn(s) to LLM for session %d", len(history), payload.session_id)
     try:
         result = generation.generate_answer(payload.question, chunks, history=history or None)
     except RuntimeError as e:
@@ -142,13 +146,34 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
       {"type": "done",   "found": bool, "answer": str, "sources": [...], "session_id": int}
       {"type": "error",  "message": str}
     """
-    # 1. Retrieve — must happen before generator starts (uses injected db)
+    # 1. Load history first — needed for query rewriting (injected db is safe here)
+    history: list[dict] = []
+    if payload.session_id:
+        recent = (
+            db.query(Message)
+            .filter(Message.session_id == payload.session_id)
+            .order_by(Message.created_at.desc())
+            .limit(HISTORY_WINDOW)
+            .all()
+        )
+        history = [
+            {"question": m.question, "answer": m.answer}
+            for m in reversed(recent)
+            if m.answer
+        ]
+
+    # 2. Rewrite query to resolve anaphoric references before retrieval
+    retrieval_query = generation.rewrite_query(payload.question, history)
+    if retrieval_query != payload.question:
+        logger.info("Query rewritten: %r → %r", payload.question, retrieval_query)
+
+    # 3. Retrieve — must happen before generator starts (uses injected db)
     chunks, coverage_ok = retrieval.retrieve(
-        query=payload.question,
+        query=retrieval_query,
         doc_ids=payload.doc_filter or None,
     )
 
-    # 2. Gate 1 — short-circuit before streaming
+    # 4. Gate 1 — short-circuit before streaming
     if not coverage_ok:
         session = _get_or_create_session(payload.session_id, payload.question, db)
         db.add(Message(session_id=session.id, question=payload.question,
@@ -165,22 +190,6 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
 
         return StreamingResponse(_not_found(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-    # 3. Load history (using injected db — safe here, before generator is returned)
-    history: list[dict] = []
-    if payload.session_id:
-        recent = (
-            db.query(Message)
-            .filter(Message.session_id == payload.session_id)
-            .order_by(Message.created_at.desc())
-            .limit(HISTORY_WINDOW)
-            .all()
-        )
-        history = [
-            {"question": m.question, "answer": m.answer}
-            for m in reversed(recent)
-            if m.answer
-        ]
 
     # 4. Pre-create / resolve session while injected db is still reliable
     chat_session = _get_or_create_session(payload.session_id, payload.question, db)
