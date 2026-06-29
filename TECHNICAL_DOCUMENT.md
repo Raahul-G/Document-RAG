@@ -544,8 +544,9 @@ Phi-4-mini's training emphasis on structured and tabular data reasoning makes it
 
 **One-time model download:**
 ```bash
-huggingface-cli download microsoft/Phi-4-mini-instruct-gguf \
-  Phi-4-mini-instruct-Q4_K_M.gguf --local-dir ./models/
+uv run hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+  --include "microsoft_microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
+  --local-dir ./models/
 ```
 
 ### 8.2 Serving Architecture
@@ -1232,7 +1233,7 @@ User clicks citation pill
 
 ```bash
 # Local LLM
-LLM_MODEL_PATH=./models/Phi-4-mini-instruct-Q4_K_M.gguf
+LLM_MODEL_PATH=./models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
 LLM_N_CTX=8192           # context window tokens
 LLM_N_THREADS=4          # CPU threads for inference
 LLM_N_GPU_LAYERS=0       # 0 = CPU only, -1 = all layers on GPU
@@ -1283,7 +1284,7 @@ Document-RAG/
 │   ├── package.json
 │   └── vite.config.js
 ├── models/                      # GGUF model files (gitignored)
-│   └── Phi-4-mini-instruct-Q4_K_M.gguf
+│   └── microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
 ├── data/                        # created at runtime
 │   ├── app.db                   # SQLite
 │   └── chroma/                  # ChromaDB persistence
@@ -1296,8 +1297,9 @@ Document-RAG/
 
 ```bash
 # Download model (one-time)
-huggingface-cli download microsoft/Phi-4-mini-instruct-gguf \
-  Phi-4-mini-instruct-Q4_K_M.gguf --local-dir ./models/
+uv run hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+  --include "microsoft_microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
+  --local-dir ./models/
 
 # Backend
 uv sync
@@ -1318,4 +1320,4 @@ The frontend dev server runs on `http://localhost:5173` and proxies `/api` reque
 docker compose up --build
 ```
 
-The compose file mounts `./models` as a read-only volume at `/models` inside the container. The `LLM_MODEL_PATH` env var is set to `/models/Phi-4-mini-instruct-Q4_K_M.gguf`.
+The compose file mounts `./models` as a read-only volume at `/models` inside the container. The `LLM_MODEL_PATH` env var is set to `/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf`.
