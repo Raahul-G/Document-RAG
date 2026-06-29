@@ -133,6 +133,8 @@ export default function UploadArea({ onUploadComplete }) {
           <span className="text-[11px]" style={{ color: "#94a3b8" }}>Supported formats</span>
         </div>
 
+        <p className="text-[11px]" style={{ color: "#94a3b8" }}>🛡️ 100% Local &amp; Private</p>
+
         <input
           ref={inputRef}
           type="file"
