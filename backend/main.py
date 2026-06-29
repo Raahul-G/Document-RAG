@@ -30,6 +30,17 @@ async def lifespan(app: FastAPI):
     bm25_index.build_index(existing_chunks)
     print(f"BM25 index built: {len(existing_chunks)} chunks loaded")
 
+    # Warm up the local LLM so the first query has no cold-start delay
+    from pathlib import Path as _Path
+    from backend.services.generation import _get_llm
+    model_path = settings.llm_model_path
+    if _Path(model_path).exists():
+        print(f"Loading LLM from {model_path} ...")
+        _get_llm()
+        print("LLM ready.")
+    else:
+        print(f"Warning: LLM model not found at {model_path} — will load on first query.")
+
     yield
 
 
