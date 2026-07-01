@@ -243,7 +243,7 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         db.commit()
 
         # 1. Parse
-        prog.update(doc_id, "parsing", f"Parsing {doc.file_type.upper()}...")
+        prog.update(doc_id, "parsing", f"Parsing {doc.file_type.upper()}...", percent=5)
         elements = _parse(file_path, doc.file_type)
 
         pages = {el["page"] for el in elements}
@@ -251,7 +251,7 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         db.commit()
 
         # 2. Chunk
-        prog.update(doc_id, "chunking", f"Chunking {len(elements)} elements into sections...")
+        prog.update(doc_id, "chunking", f"Chunking {len(elements)} elements into sections...", percent=15)
         chunk_records = _chunk(elements, doc_id, doc.original_name)
 
         if not chunk_records:
@@ -260,13 +260,20 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
             prog.update(doc_id, "done", "Indexed — no content extracted.", done=True)
             return 0
 
-        # 3. Embed
-        prog.update(doc_id, "embedding", f"Embedding {len(chunk_records)} chunks (first run downloads model)...")
+        # 3. Embed — batched so we can report per-chunk progress
+        total = len(chunk_records)
+        prog.update(doc_id, "embedding", f"Embedding {total} chunks...", percent=20)
         texts = [c["text"] for c in chunk_records]
-        vectors = embeddings.embed_documents(texts)
+        BATCH_SIZE = 16
+        vectors: list[list[float]] = []
+        for i in range(0, total, BATCH_SIZE):
+            vectors.extend(embeddings.embed_documents(texts[i : i + BATCH_SIZE]))
+            done_count = min(i + BATCH_SIZE, total)
+            pct = 20 + int(done_count / total * 70)  # 20→90% during embedding
+            prog.update(doc_id, "embedding", f"Embedding chunk {done_count}/{total}...", percent=pct)
 
         # 4a. Store in ChromaDB
-        prog.update(doc_id, "storing", "Storing in vector database...")
+        prog.update(doc_id, "storing", "Storing in vector database...", percent=95)
         vectorstore.add_chunks(chunk_records, vectors)
 
         # 4b. Store chunk metadata in SQLite
@@ -289,7 +296,7 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         all_chunks = vectorstore.get_all_chunks()
         bm25_index.build_index(all_chunks)
 
-        prog.update(doc_id, "done", f"Indexed — {len(chunk_records)} chunks ready.", done=True)
+        prog.update(doc_id, "done", f"Indexed — {len(chunk_records)} chunks ready.", done=True, percent=100)
         return len(chunk_records)
 
     except Exception as e:

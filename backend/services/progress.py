@@ -16,6 +16,7 @@ def update(
     message: str,
     done: bool = False,
     error: str | None = None,
+    percent: int = 0,
 ) -> None:
     _store[doc_id] = {
         "doc_id": doc_id,
@@ -23,6 +24,7 @@ def update(
         "message": message,
         "done": done,
         "error": error,
+        "percent": percent,
     }
 
 

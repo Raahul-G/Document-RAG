@@ -31,7 +31,7 @@ export default function UploadArea({ onUploadComplete }) {
 
     for (const file of valid) {
       const uid = `${Date.now()}-${Math.random()}`
-      setUploads(prev => [...prev, { uid, name: file.name, stage: "waiting", message: "Uploading...", done: false, error: null }])
+      setUploads(prev => [...prev, { uid, name: file.name, stage: "waiting", message: "Uploading...", done: false, error: null, percent: 0 }])
 
       try {
         const form = new FormData()
@@ -50,7 +50,7 @@ export default function UploadArea({ onUploadComplete }) {
 
         es.onmessage = (e) => {
           const p = JSON.parse(e.data)
-          setUploadField(uid, { stage: p.stage, message: p.message, done: !!p.done, error: p.error })
+          setUploadField(uid, { stage: p.stage, message: p.message, done: !!p.done, error: p.error, percent: p.percent ?? 0 })
           if (p.done || p.error) {
             es.close()
             onUploadComplete?.()
@@ -218,6 +218,14 @@ export default function UploadArea({ onUploadComplete }) {
                   >
                     {u.message}
                   </p>
+                  {!u.done && !u.error && (
+                    <div className="w-full mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: "#e2e8f0" }}>
+                      <div
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{ width: `${u.percent ?? 0}%`, background: C.primary }}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Status indicator */}

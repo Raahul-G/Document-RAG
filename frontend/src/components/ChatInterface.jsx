@@ -23,6 +23,7 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
   const [snippetModal, setSnippetModal] = useState(null)
   const [copySuccess, setCopySuccess] = useState(false)
   const [thinkingPhase, setThinkingPhase] = useState(0)
+  const [queryStatus, setQueryStatus] = useState("")
   const bottomRef = useRef(null)
 
   // Cycle thinking phases while the streaming bubble has no text yet
@@ -81,6 +82,7 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
 
     setMessages(prev => [...prev, { type: "question", text: q, scopedDocs }])
     setLoading(true)
+    setQueryStatus("Searching documents...")
 
     // Insert a streaming placeholder immediately so the user sees the bubble appear
     setMessages(prev => [...prev, { type: "answer", text: "", sources: [], found: true, streaming: true, scopedDocs }])
@@ -117,7 +119,9 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
           let event
           try { event = JSON.parse(raw) } catch { continue }
 
-          if (event.type === "token") {
+          if (event.type === "status") {
+            setQueryStatus(event.status)
+          } else if (event.type === "token") {
             // Append token to the streaming placeholder
             setMessages(prev => {
               const msgs = [...prev]
@@ -167,6 +171,7 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
       })
     } finally {
       setLoading(false)
+      setQueryStatus("")
     }
   }
 
@@ -450,9 +455,19 @@ export default function ChatInterface({ sessionId, isReady, onSessionCreated, on
                 </button>
               </div>
             </div>
-            <p className="text-[11px] font-bold text-center mt-3" style={{ color: C.primary }}>
-              🛡️ Runs entirely on your local machine — No data is sent out
-            </p>
+            {loading && queryStatus ? (
+              <p className="text-[11px] text-center mt-3 flex items-center justify-center gap-1.5" style={{ color: "#94a3b8" }}>
+                <span
+                  className="w-1.5 h-1.5 rounded-full animate-pulse inline-block"
+                  style={{ background: "#94a3b8" }}
+                />
+                {queryStatus}
+              </p>
+            ) : (
+              <p className="text-[11px] font-bold text-center mt-3" style={{ color: C.primary }}>
+                🛡️ Runs entirely on your local machine — No data is sent out
+              </p>
+            )}
           </div>
         </div>
       </div>

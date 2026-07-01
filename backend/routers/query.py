@@ -204,6 +204,8 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
         answer_parts: list[str] = []
         found = False
 
+        yield f'data: {json.dumps({"type": "status", "status": "Generating answer..."})}\n\n'
+
         try:
             for event in generation.stream_answer(question, chunks, history or None):
                 if event["type"] == "token":

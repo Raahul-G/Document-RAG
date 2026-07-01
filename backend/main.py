@@ -13,6 +13,8 @@ from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import documents, query, sessions, snippets
 
+_llm_ready = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
     print(f"BM25 index built: {len(existing_chunks)} chunks loaded")
 
     # Warm up the local LLM so the first query has no cold-start delay
+    global _llm_ready
     from pathlib import Path as _Path
     from backend.services.generation import _get_llm
     model_path = settings.llm_model_path
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI):
         print("LLM ready.")
     else:
         print(f"Warning: LLM model not found at {model_path} — will load on first query.")
+    _llm_ready = True
 
     yield
 
@@ -62,6 +66,11 @@ app.include_router(documents.router, prefix="/api")
 app.include_router(query.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(snippets.router, prefix="/api")
+
+
+@app.get("/api/system/status")
+def system_status():
+    return {"llm_ready": _llm_ready}
 
 # Serve React build in production
 frontend_dist = Path("frontend/dist")

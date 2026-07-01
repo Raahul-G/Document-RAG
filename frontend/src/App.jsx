@@ -11,8 +11,23 @@ export default function App() {
   const [sessions, setSessions] = useState([])
   const [documents, setDocuments] = useState([])
   const [activeSessionId, setActiveSessionId] = useState(null)
+  const [llmReady, setLlmReady] = useState(false)
 
   const isReady = documents.some(d => d.status === "indexed")
+
+  useEffect(() => {
+    if (llmReady) return
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/system/status")
+        const data = await res.json()
+        if (data.llm_ready) setLlmReady(true)
+      } catch {}
+    }
+    poll()
+    const id = setInterval(poll, 1500)
+    return () => clearInterval(id)
+  }, [llmReady])
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -51,6 +66,39 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: "#f7f9fb" }}>
+
+      {/* Model loading overlay */}
+      {!llmReady && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5"
+          style={{ background: "#f7f9fb" }}
+        >
+          <div
+            className="w-20 h-20 rounded-2xl flex items-center justify-center"
+            style={{ background: "#dbeafe" }}
+          >
+            <span
+              className="material-symbols-outlined animate-pulse"
+              style={{ fontSize: "40px", color: C.primary, fontVariationSettings: "'FILL' 1" }}
+            >
+              memory
+            </span>
+          </div>
+          <div className="text-center">
+            <p className="font-bold text-xl" style={{ color: "#191c1e" }}>Starting up…</p>
+            <p className="text-sm mt-2" style={{ color: "#64748b" }}>Loading the local language model. This takes a moment on first start.</p>
+          </div>
+          <div className="flex gap-1.5 mt-2">
+            {[0, 1, 2].map(i => (
+              <span
+                key={i}
+                className="w-2 h-2 rounded-full animate-bounce"
+                style={{ background: C.primary, animationDelay: `${i * 0.2}s` }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
       <ChatSidebar
         sessions={sessions}
         documents={documents}
