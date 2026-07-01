@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Document RAG — Control & Systems Engineering</title>
+  <style>
+    :root {
+      --ford-blue: #003478;
+      --ford-blue-light: #0057A8;
+      --ford-blue-pale: #E8EDF5;
+      --ford-blue-mid: #D0DFF2;
+      --white: #FFFFFF;
+      --bg: #F4F6F9;
+      --text-dark: #0A0E1A;
+      --text-mid: #3D4A5C;
+      --text-light: #6B7A90;
+      --border: #DDE3ED;
+      --success: #1A7A4A;
+      --radius: 12px;
+      --radius-lg: 20px;
+      --shadow: 0 2px 16px rgba(0,52,120,0.08);
+      --shadow-hover: 0 8px 32px rgba(0,52,120,0.15);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text-dark);
+      line-height: 1.6;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 40px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+
+    .nav-logo-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--ford-blue);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 800;
+      font-size: 14px;
+      letter-spacing: -0.5px;
+    }
+
+    .nav-logo-text {
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--ford-blue);
+      letter-spacing: -0.3px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-mid);
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--ford-blue); }
+
+    .nav-cta {
+      background: var(--ford-blue);
+      color: white !important;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-weight: 600 !important;
+      transition: background 0.2s !important;
+    }
+
+    .nav-cta:hover { background: var(--ford-blue-light) !important; color: white !important; }
+
+    /* ── SECTIONS ── */
+    section { padding: 100px 40px; }
+
+    .container { max-width: 1100px; margin: 0 auto; }
+
+    .section-label {
+      display: inline-block;
+      background: var(--ford-blue-pale);
+      color: var(--ford-blue);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      padding: 6px 14px;
+      border-radius: 100px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: clamp(28px, 4vw, 42px);
+      font-weight: 800;
+      color: var(--text-dark);
+      letter-spacing: -0.8px;
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+
+    .section-title span { color: var(--ford-blue); }
+
+    .section-sub {
+      font-size: 17px;
+      color: var(--text-mid);
+      max-width: 560px;
+      line-height: 1.7;
+    }
+
+    /* ── HERO ── */
+    #hero {
+      min-height: 100vh;
+      background: linear-gradient(150deg, var(--ford-blue) 0%, #001F4D 60%, #001030 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 40px 80px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #hero::before {
+      content: '';
+      position: absolute;
+      top: -200px; right: -200px;
+      width: 700px; height: 700px;
+      background: radial-gradient(circle, rgba(0,87,168,0.4) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    #hero::after {
+      content: '';
+      position: absolute;
+      bottom: -100px; left: -100px;
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(0,87,168,0.2) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-inner {
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 80px;
+      align-items: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.9);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 8px 16px;
+      border-radius: 100px;
+      margin-bottom: 28px;
+    }
+
+    .hero-badge-dot {
+      width: 6px; height: 6px;
+      background: #4ADE80;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.3); }
+    }
+
+    .hero-title {
+      font-size: clamp(36px, 5vw, 58px);
+      font-weight: 900;
+      color: white;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 24px;
+    }
+
+    .hero-title span {
+      color: #60A5FA;
+    }
+
+    .hero-desc {
+      font-size: 18px;
+      color: rgba(255,255,255,0.75);
+      line-height: 1.7;
+      margin-bottom: 40px;
+      max-width: 480px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      background: white;
+      color: var(--ford-blue);
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 15px;
+      text-decoration: none;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-primary:hover {
+      background: var(--ford-blue-pale);
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.2);
+      transition: all 0.2s;
+    }
+
+    .btn-ghost:hover {
+      background: rgba(255,255,255,0.18);
+      transform: translateY(-1px);
+    }
+
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 16px;
+      overflow: hidden;
+      margin-top: 48px;
+    }
+
+    .hero-stat {
+      background: rgba(255,255,255,0.05);
+      padding: 24px;
+      text-align: center;
+    }
+
+    .hero-stat-value {
+      font-size: 28px;
+      font-weight: 800;
+      color: white;
+      letter-spacing: -0.5px;
+    }
+
+    .hero-stat-label {
+      font-size: 12px;
+      color: rgba(255,255,255,0.6);
+      margin-top: 4px;
+      font-weight: 500;
+    }
+
+    /* Hero right - screenshot placeholder */
+    .hero-visual {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 20px;
+      padding: 32px;
+      min-height: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .hero-visual-bar {
+      height: 10px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.15);
+    }
+
+    .hero-visual-bar.short { width: 40%; }
+    .hero-visual-bar.mid { width: 65%; }
+
+    .hero-visual-screen {
+      flex: 1;
+      background: rgba(255,255,255,0.04);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 280px;
+    }
+
+    .screenshot-placeholder-text {
+      color: rgba(255,255,255,0.3);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .screenshot-icon {
+      font-size: 40px;
+      opacity: 0.3;
+    }
+
+    /* ── PROBLEM ── */
+    #problem {
+      background: white;
+    }
+
+    .problem-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 60px;
+      align-items: center;
+      margin-top: 60px;
+    }
+
+    .problem-card {
+      background: #FFF5F5;
+      border: 1px solid #FECACA;
+      border-radius: var(--radius-lg);
+      padding: 32px;
+    }
+
+    .problem-card-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #991B1B;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .problem-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(153,27,27,0.08);
+      font-size: 15px;
+      color: #4A1010;
+    }
+
+    .problem-item:last-child { border-bottom: none; }
+
+    .problem-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+
+    .solution-card {
+      background: var(--ford-blue-pale);
+      border: 1px solid var(--ford-blue-mid);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+    }
+
+    .solution-card-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--ford-blue);
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .solution-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(0,52,120,0.08);
+      font-size: 15px;
+      color: #0A2050;
+    }
+
+    .solution-item:last-child { border-bottom: none; }
+
+    /* ── WHAT IT DOES ── */
+    #what {
+      background: var(--bg);
+    }
+
+    .what-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 56px;
+    }
+
+    .what-card {
+      background: white;
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      transition: all 0.25s;
+    }
+
+    .what-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-hover);
+      border-color: var(--ford-blue-mid);
+    }
+
+    .what-icon {
+      width: 52px; height: 52px;
+      background: var(--ford-blue-pale);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      margin-bottom: 20px;
+    }
+
+    .what-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 10px;
+    }
+
+    .what-desc {
+      font-size: 14px;
+      color: var(--text-mid);
+      line-height: 1.7;
+    }
+
+    /* ── COMPARISON ── */
+    #compare {
+      background: white;
+    }
+
+    .compare-table {
+      margin-top: 56px;
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    .compare-header {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      background: var(--ford-blue);
+      color: white;
+    }
+
+    .compare-header-cell {
+      padding: 20px 28px;
+      font-weight: 700;
+      font-size: 15px;
+    }
+
+    .compare-header-cell:not(:first-child) {
+      text-align: center;
+    }
+
+    .compare-row {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    .compare-row:last-child { border-bottom: none; }
+    .compare-row:hover { background: var(--ford-blue-pale); }
+
+    .compare-cell {
+      padding: 18px 28px;
+      font-size: 14px;
+      color: var(--text-mid);
+      display: flex;
+      align-items: center;
+    }
+
+    .compare-cell:not(:first-child) {
+      justify-content: center;
+    }
+
+    .compare-cell-label {
+      font-weight: 600;
+      color: var(--text-dark);
+      font-size: 15px;
+    }
+
+    .badge-yes {
+      background: #DCFCE7;
+      color: #166534;
+      padding: 4px 14px;
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .badge-no {
+      background: #FEE2E2;
+      color: #991B1B;
+      padding: 4px 14px;
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .badge-partial {
+      background: #FEF9C3;
+      color: #854D0E;
+      padding: 4px 14px;
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    /* ── USE CASES ── */
+    #usecases {
+      background: var(--bg);
+    }
+
+    .usecase-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-top: 56px;
+    }
+
+    .usecase-card {
+      background: white;
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: flex;
+      gap: 20px;
+    }
+
+    .usecase-icon {
+      width: 48px; height: 48px;
+      background: var(--ford-blue);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+
+    .usecase-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 8px;
+    }
+
+    .usecase-desc {
+      font-size: 14px;
+      color: var(--text-mid);
+      line-height: 1.7;
+    }
+
+    .usecase-example {
+      margin-top: 12px;
+      background: var(--ford-blue-pale);
+      border-left: 3px solid var(--ford-blue);
+      padding: 10px 14px;
+      border-radius: 0 8px 8px 0;
+      font-size: 13px;
+      color: var(--ford-blue);
+      font-style: italic;
+    }
+
+    /* ── HOW IT WORKS ── */
+    #how {
+      background: white;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      margin-top: 56px;
+      position: relative;
+    }
+
+    .steps::before {
+      content: '';
+      position: absolute;
+      top: 36px;
+      left: calc(12.5% + 16px);
+      right: calc(12.5% + 16px);
+      height: 2px;
+      background: var(--ford-blue-mid);
+      z-index: 0;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 0 16px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-num {
+      width: 72px; height: 72px;
+      background: var(--ford-blue);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      font-weight: 900;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 20px rgba(0,52,120,0.3);
+    }
+
+    .step-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 10px;
+    }
+
+    .step-desc {
+      font-size: 13px;
+      color: var(--text-mid);
+      line-height: 1.6;
+    }
+
+    /* ── FEATURES ── */
+    #features {
+      background: var(--ford-blue);
+      padding: 100px 40px;
+    }
+
+    #features .section-label {
+      background: rgba(255,255,255,0.15);
+      color: rgba(255,255,255,0.9);
+    }
+
+    #features .section-title {
+      color: white;
+    }
+
+    #features .section-sub {
+      color: rgba(255,255,255,0.7);
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 56px;
+    }
+
+    .feature-card {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      transition: all 0.25s;
+    }
+
+    .feature-card:hover {
+      background: rgba(255,255,255,0.12);
+      transform: translateY(-4px);
+    }
+
+    .feature-icon {
+      font-size: 36px;
+      margin-bottom: 20px;
+    }
+
+    .feature-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: white;
+      margin-bottom: 10px;
+    }
+
+    .feature-desc {
+      font-size: 14px;
+      color: rgba(255,255,255,0.65);
+      line-height: 1.7;
+    }
+
+    /* ── SCREENSHOTS ── */
+    #screenshots {
+      background: var(--bg);
+    }
+
+    .screenshot-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-top: 56px;
+    }
+
+    .screenshot-card {
+      background: white;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .screenshot-ph {
+      height: 260px;
+      background: linear-gradient(135deg, var(--ford-blue-pale) 0%, var(--ford-blue-mid) 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .screenshot-ph-icon { font-size: 48px; opacity: 0.4; }
+    .screenshot-ph-label {
+      font-size: 13px;
+      color: var(--ford-blue);
+      font-weight: 600;
+      opacity: 0.6;
+    }
+
+    .screenshot-info {
+      padding: 20px 24px;
+    }
+
+    .screenshot-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 6px;
+    }
+
+    .screenshot-desc {
+      font-size: 13px;
+      color: var(--text-mid);
+    }
+
+    /* ── INSTALL ── */
+    #install {
+      background: white;
+    }
+
+    .install-steps {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 60px;
+      align-items: start;
+      margin-top: 56px;
+    }
+
+    .install-step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .install-step {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .install-step-num {
+      width: 36px; height: 36px;
+      background: var(--ford-blue);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .install-step-text strong {
+      display: block;
+      font-size: 15px;
+      color: var(--text-dark);
+      margin-bottom: 4px;
+    }
+
+    .install-step-text p {
+      font-size: 13px;
+      color: var(--text-mid);
+      line-height: 1.6;
+    }
+
+    .install-note {
+      background: var(--ford-blue-pale);
+      border: 1px solid var(--ford-blue-mid);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-top: 24px;
+    }
+
+    .install-note-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ford-blue);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .install-note p {
+      font-size: 13px;
+      color: var(--text-mid);
+      line-height: 1.6;
+    }
+
+    .install-visual {
+      background: var(--ford-blue);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+    }
+
+    .install-visual-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .install-docker-step {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.85);
+      font-size: 14px;
+    }
+
+    .install-docker-step:last-child { border-bottom: none; }
+
+    .install-docker-icon {
+      width: 36px; height: 36px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .install-docker-label { font-weight: 500; }
+    .install-docker-sub { font-size: 12px; color: rgba(255,255,255,0.45); margin-top: 2px; }
+
+    /* ── FOOTER ── */
+    footer {
+      background: var(--text-dark);
+      color: rgba(255,255,255,0.5);
+      text-align: center;
+      padding: 40px;
+      font-size: 13px;
+    }
+
+    footer strong { color: rgba(255,255,255,0.8); }
+
+    /* ── DIVIDER ── */
+    .divider {
+      width: 60px; height: 4px;
+      background: var(--ford-blue);
+      border-radius: 2px;
+      margin: 20px 0 0;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 900px) {
+      nav { padding: 0 20px; }
+      .nav-links { display: none; }
+      section { padding: 60px 20px; }
+      .hero-inner { grid-template-columns: 1fr; gap: 40px; }
+      .hero-visual { display: none; }
+      .what-grid, .features-grid { grid-template-columns: 1fr; }
+      .compare-header, .compare-row { grid-template-columns: 1fr 80px 80px; }
+      .usecase-grid { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: repeat(2, 1fr); gap: 40px; }
+      .steps::before { display: none; }
+      .screenshot-grid { grid-template-columns: 1fr; }
+      .install-steps { grid-template-columns: 1fr; }
+      .problem-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+
+<!-- HERO -->
+<section id="hero">
+  <!-- Wordmark -->
+  <div style="width: 100%; text-align: center; margin-bottom: 56px; position: relative; z-index: 1;">
+    <p style="font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.4); letter-spacing: 3px; text-transform: uppercase; margin-bottom: 12px;">Control & Systems Engineering</p>
+    <h1 style="font-size: 52px; font-weight: 900; color: #ffffff; letter-spacing: -1.5px; line-height: 1;">Document RAG</h1>
+    <div style="width: 48px; height: 3px; background: #60A5FA; border-radius: 2px; margin: 16px auto 0;"></div>
+  </div>
+  <div class="hero-inner">
+    <div>
+      <div class="hero-badge">
+        <div class="hero-badge-dot"></div>
+        Control &amp; Systems Engineering — Internal Tool
+      </div>
+      <h1 class="hero-title">
+        Your Engineering Docs.<br/>
+        <span>Instant Answers.</span>
+      </h1>
+      <p class="hero-desc">
+        Stop searching through hundreds of pages of codebooks, control specs, and standards. Ask in plain English — get precise answers in seconds. Fully offline. Your data never leaves your system.
+      </p>
+      <div class="hero-actions">
+        <a href="#how" class="btn-primary">→ See How It Works</a>
+        <a href="#install" class="btn-ghost">Install Guide</a>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <div class="hero-stat-value">100%</div>
+          <div class="hero-stat-label">Offline</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">0</div>
+          <div class="hero-stat-label">Data Sent to Cloud</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">&lt; 5s</div>
+          <div class="hero-stat-label">Answer Time</div>
+        </div>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="hero-visual-bar short"></div>
+      <div class="hero-visual-bar mid"></div>
+      <div class="hero-visual-screen">
+        <div class="screenshot-icon">🖥️</div>
+        <div class="screenshot-placeholder-text">App Screenshot Coming Soon</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="problem">
+  <div class="container">
+    <div class="section-label">The Problem</div>
+    <h2 class="section-title">Finding answers in specs<br/>shouldn't take <span>hours</span></h2>
+    <p class="section-sub">Plant-side engineers deal with massive documentation every day. The old way is slow, error-prone and frustrating.</p>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <div class="problem-card-title">❌ Without Document RAG</div>
+        <div class="problem-item"><span class="problem-icon">⏱️</span>Manually searching through hundreds of pages of control specs</div>
+        <div class="problem-item"><span class="problem-icon">🔍</span>Ctrl+F hunting across multiple PDF codebooks</div>
+        <div class="problem-item"><span class="problem-icon">🌐</span>Pasting confidential documents into ChatGPT (data risk)</div>
+        <div class="problem-item"><span class="problem-icon">❓</span>Guessing which document has the answer</div>
+        <div class="problem-item"><span class="problem-icon">🚫</span>No internet on plant floor = no AI assistance</div>
+      </div>
+      <div class="solution-card">
+        <div class="solution-card-title">✅ With Document RAG</div>
+        <div class="solution-item"><span class="problem-icon">⚡</span>Ask a question, get a precise answer in seconds</div>
+        <div class="solution-item"><span class="problem-icon">📄</span>Searches all your uploaded documents at once</div>
+        <div class="solution-item"><span class="problem-icon">🔒</span>Runs 100% locally — no data ever leaves the plant</div>
+        <div class="solution-item"><span class="problem-icon">📍</span>Shows exactly which document and section the answer came from</div>
+        <div class="solution-item"><span class="problem-icon">📡</span>No internet required — works on any machine</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- WHAT IT DOES -->
+<section id="what">
+  <div class="container">
+    <div class="section-label">What It Does</div>
+    <h2 class="section-title">A private AI that knows<br/><span>your documents</span></h2>
+    <p class="section-sub">Document RAG is an AI assistant trained only on the documents you upload. It understands your specific codebooks, control specs, and standards — nothing else.</p>
+    <div class="what-grid">
+      <div class="what-card">
+        <div class="what-icon">📂</div>
+        <div class="what-title">Upload Your Documents</div>
+        <div class="what-desc">Upload codebooks, control specifications, code standards, installation manuals — any PDF or Word document. The system reads and indexes everything automatically.</div>
+      </div>
+      <div class="what-card">
+        <div class="what-icon">💬</div>
+        <div class="what-title">Ask in Plain English</div>
+        <div class="what-desc">No special commands or search syntax. Just type your question naturally — "What is the fault code for drive overtemperature?" — and get a direct answer.</div>
+      </div>
+      <div class="what-card">
+        <div class="what-icon">📍</div>
+        <div class="what-title">Get Sourced Answers</div>
+        <div class="what-desc">Every answer shows exactly which document and page it came from. You can verify the source instantly. No guessing, no hallucinations from the internet.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- USE CASES -->
+<section id="usecases">
+  <div class="container">
+    <div class="section-label">Use Cases</div>
+    <h2 class="section-title">Built for <span>plant-side engineers</span></h2>
+    <p class="section-sub">Real scenarios where Document RAG saves time during machine installation and commissioning.</p>
+    <div class="usecase-grid">
+      <div class="usecase-card">
+        <div class="usecase-icon">⚡</div>
+        <div>
+          <div class="usecase-title">Fault &amp; Alarm Codes</div>
+          <div class="usecase-desc">Instantly decode alarm codes from drive controllers, PLCs, and HMIs without flipping through pages of error code tables.</div>
+          <div class="usecase-example">"What does alarm code 0xA3 mean in the Siemens SINAMICS drive?"</div>
+        </div>
+      </div>
+      <div class="usecase-card">
+        <div class="usecase-icon">📐</div>
+        <div>
+          <div class="usecase-title">Control Specifications</div>
+          <div class="usecase-desc">Quickly find parameter settings, torque limits, speed references, and signal configurations buried inside control specs.</div>
+          <div class="usecase-example">"What is the maximum allowable deceleration ramp for Zone 3 conveyor?"</div>
+        </div>
+      </div>
+      <div class="usecase-card">
+        <div class="usecase-icon">📋</div>
+        <div>
+          <div class="usecase-title">Code Standards Lookup</div>
+          <div class="usecase-desc">Check compliance and wiring requirements from internal code standards without opening multiple documents simultaneously.</div>
+          <div class="usecase-example">"What wire gauge is required for 24V DC control circuits per our standard?"</div>
+        </div>
+      </div>
+      <div class="usecase-card">
+        <div class="usecase-icon">🔧</div>
+        <div>
+          <div class="usecase-title">Installation Procedures</div>
+          <div class="usecase-desc">Pull up step-by-step installation sequences from machine manuals during commissioning without lugging binders around.</div>
+          <div class="usecase-example">"What are the commissioning steps for the hydraulic clamping unit on Machine Line 4?"</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="container">
+    <div class="section-label">How It Works</div>
+    <h2 class="section-title">Simple to use.<br/><span>Powerful results.</span></h2>
+    <p class="section-sub">Four steps — and you're getting answers from your own documents in seconds.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-title">Open the App</div>
+        <div class="step-desc">Access Document RAG from any browser on your machine at localhost:8000. No login required.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-title">Upload Documents</div>
+        <div class="step-desc">Drag and drop your codebooks, control specs, or standards. PDF and Word documents supported.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-title">Ask Your Question</div>
+        <div class="step-desc">Type your question in plain English just like you'd ask a colleague. No special syntax needed.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-title">Get Your Answer</div>
+        <div class="step-desc">Receive a precise answer with the source document and section cited. Verify instantly.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- SCREENSHOTS -->
+<section id="screenshots">
+  <div class="container">
+    <div class="section-label">The App</div>
+    <h2 class="section-title">Clean. Fast. <span>No training needed.</span></h2>
+    <p class="section-sub">Designed to be picked up immediately by any engineer — no onboarding, no manual, no technical knowledge required.</p>
+    <div class="screenshot-grid">
+      <div class="screenshot-card">
+        <img src="docs/screenshots/01-home.png" alt="Home Screen" style="width:100%; display:block; border-radius: var(--radius-lg) var(--radius-lg) 0 0; object-fit:cover;" />
+        <div class="screenshot-info">
+          <div class="screenshot-title">Home Screen</div>
+          <div class="screenshot-desc">Clean landing interface — start a conversation or upload documents from one place.</div>
+        </div>
+      </div>
+      <div class="screenshot-card">
+        <img src="docs/screenshots/02-upload.png" alt="Document Upload" style="width:100%; display:block; border-radius: var(--radius-lg) var(--radius-lg) 0 0; object-fit:cover;" />
+        <div class="screenshot-info">
+          <div class="screenshot-title">Upload Documents</div>
+          <div class="screenshot-desc">Drag and drop PDFs or Word docs. The system processes and indexes them automatically — ready to query in seconds.</div>
+        </div>
+      </div>
+      <div class="screenshot-card">
+        <img src="docs/screenshots/03-chat.png" alt="Chat Interface" style="width:100%; display:block; border-radius: var(--radius-lg) var(--radius-lg) 0 0; object-fit:cover;" />
+        <div class="screenshot-info">
+          <div class="screenshot-title">Ask Anything</div>
+          <div class="screenshot-desc">Type your question in plain English and get a precise answer with the source document cited below.</div>
+        </div>
+      </div>
+      <div class="screenshot-card">
+        <img src="docs/screenshots/04-snippet-viewer.png" alt="Snippet Viewer" style="width:100%; display:block; border-radius: var(--radius-lg) var(--radius-lg) 0 0; object-fit:cover;" />
+        <div class="screenshot-info">
+          <div class="screenshot-title">Source Snippet Viewer</div>
+          <div class="screenshot-desc">See the exact passage from the source document that backed up the answer. Every response is fully traceable.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section id="install">
+  <div class="container">
+    <div class="section-label">Installation</div>
+    <h2 class="section-title">Up and running<br/>in <span>under 10 minutes</span></h2>
+    <p class="section-sub">No technical background needed. If you can install an app, you can install Document RAG.</p>
+    <div class="install-steps">
+      <div>
+        <div class="install-step-list">
+          <div class="install-step">
+            <div class="install-step-num">1</div>
+            <div class="install-step-text">
+              <strong>Install Docker Desktop</strong>
+              <p>Download and install Docker Desktop for Windows from the Docker website. It's a free application — takes about 5 minutes.</p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="install-step-num">2</div>
+            <div class="install-step-text">
+              <strong>Open Docker Desktop</strong>
+              <p>Launch Docker Desktop from your Start menu and wait for it to fully load (the whale icon in the taskbar should be steady).</p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="install-step-num">3</div>
+            <div class="install-step-text">
+              <strong>Search for the Image</strong>
+              <p>Click the search bar at the top and type <strong>rp1901/document-rag-app</strong> then press Enter and click Pull.</p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="install-step-num">4</div>
+            <div class="install-step-text">
+              <strong>Run the App</strong>
+              <p>Go to the Images tab, find the image, click Run. In the popup set Host Port to <strong>8000</strong> and click Run.</p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="install-step-num">5</div>
+            <div class="install-step-text">
+              <strong>Open in Browser</strong>
+              <p>Open any browser and go to <strong>http://localhost:8000</strong> — the app loads and is ready to use.</p>
+            </div>
+          </div>
+        </div>
+        <div class="install-note">
+          <div class="install-note-title">📥 First Run Note</div>
+          <p>The first time you start the container, it will automatically download the AI model (~2.5GB). This takes a few minutes depending on your connection. Every start after that is instant.</p>
+        </div>
+      </div>
+      <div class="install-visual">
+        <div class="install-visual-title">Docker Desktop Steps</div>
+        <div class="install-docker-step">
+          <div class="install-docker-icon">🔍</div>
+          <div>
+            <div class="install-docker-label">Search Docker Hub</div>
+            <div class="install-docker-sub">rp1901/document-rag-app</div>
+          </div>
+        </div>
+        <div class="install-docker-step">
+          <div class="install-docker-icon">⬇️</div>
+          <div>
+            <div class="install-docker-label">Pull the Image</div>
+            <div class="install-docker-sub">Downloads the application (~3.3GB)</div>
+          </div>
+        </div>
+        <div class="install-docker-step">
+          <div class="install-docker-icon">▶️</div>
+          <div>
+            <div class="install-docker-label">Click Run</div>
+            <div class="install-docker-sub">Set Host Port to 8000</div>
+          </div>
+        </div>
+        <div class="install-docker-step">
+          <div class="install-docker-icon">📥</div>
+          <div>
+            <div class="install-docker-label">Model Downloads Automatically</div>
+            <div class="install-docker-sub">First run only (~2.5GB, a few minutes)</div>
+          </div>
+        </div>
+        <div class="install-docker-step">
+          <div class="install-docker-icon">🌐</div>
+          <div>
+            <div class="install-docker-label">Open localhost:8000</div>
+            <div class="install-docker-sub">App is ready to use</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p><strong>Document RAG</strong> — Control &amp; Systems Engineering Internal Tool</p>
+  <p style="margin-top:8px">Runs 100% offline &nbsp;·&nbsp; Data never leaves your machine &nbsp;·&nbsp; Built for plant-side engineers</p>
+</footer>
+
+</body>
+</html>

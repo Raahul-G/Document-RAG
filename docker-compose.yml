@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    image: document-rag-app:local
     ports:
       - "8000:8000"
     env_file: .env
@@ -16,9 +17,10 @@ services:
       - app_data:/data
       - app_uploads:/uploads
       - hf_cache:/root/.cache/huggingface
-      - ./models:/models:ro
+      - models_data:/models
 
 volumes:
   app_data:
   app_uploads:
   hf_cache:
+  models_data:

@@ -21,6 +21,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never
 ENV UV_PYTHON=python3.12
 
+# Ensure llama-cpp-python builds for CPU only (no BLAS, no CUDA)
+ENV GGML_BLAS=OFF
+ENV GGML_CUDA=OFF
+
 # Install Python dependencies only (skip building the local project package)
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
@@ -34,10 +38,30 @@ COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 # Create data directories
 RUN mkdir -p /data /uploads /models
 
+# Copy and register the startup script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Baked-in defaults — no .env file needed
+ENV CORS_ORIGINS=*
+ENV DATABASE_URL=sqlite:////data/app.db
+ENV CHROMA_PATH=/data/chroma
+ENV UPLOAD_DIR=/uploads
+ENV LLM_MODEL_PATH=/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
+ENV LLM_N_CTX=8192
+ENV LLM_N_THREADS=4
+ENV LLM_N_GPU_LAYERS=0
+ENV LLM_TEMPERATURE=0.0
+ENV LLM_MAX_TOKENS=2048
+
+# Auto-create persistent volumes when run from Docker Desktop
+VOLUME ["/data", "/uploads", "/models"]
+
 EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -7,6 +7,14 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+overrides = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
+]
+
 [[package]]
 name = "aiofiles"
 version = "25.1.0"
