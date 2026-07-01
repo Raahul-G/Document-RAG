@@ -10,7 +10,7 @@ services:
       - DATABASE_URL=sqlite:////data/app.db
       - CHROMA_PATH=/data/chroma
       - UPLOAD_DIR=/uploads
-      - LLM_MODEL_PATH=/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
+      - LLM_MODEL_PATH=/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
       - LLM_N_THREADS=4
       - LLM_N_GPU_LAYERS=0
     volumes:
