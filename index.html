@@ -178,7 +178,7 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 80px;
-      align-items: center;
+      align-items: start;
       position: relative;
       z-index: 1;
     }
@@ -983,13 +983,11 @@
         </div>
       </div>
     </div>
-    <div class="hero-visual">
-      <div class="hero-visual-bar short"></div>
-      <div class="hero-visual-bar mid"></div>
-      <div class="hero-visual-screen">
-        <div class="screenshot-icon">🖥️</div>
-        <div class="screenshot-placeholder-text">App Screenshot Coming Soon</div>
-      </div>
+    <div style="position: relative; align-self: start; padding-top: 72px;">
+      <!-- Glow behind image -->
+      <div style="position:absolute; inset:-30px; background: radial-gradient(ellipse at center, rgba(96,165,250,0.4) 0%, rgba(0,87,168,0.25) 50%, transparent 75%); border-radius: 32px; filter: blur(28px); z-index:0;"></div>
+      <img src="docs/screenshots/03-chat.png" alt="Document RAG Chat"
+        style="position:relative; z-index:1; width:120%; max-width:120%; margin-left:-10%; display:block; border-radius:16px; border:1px solid rgba(255,255,255,0.15); box-shadow: 0 12px 60px rgba(0,0,0,0.5);" />
     </div>
   </div>
 </section>
