@@ -39,7 +39,7 @@ COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 RUN mkdir -p /data /uploads /models
 
 # Pre-download embedding model at build time so no runtime download is needed
-RUN /app/.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)"
+RUN /app/.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 # Copy and register the startup script
 COPY entrypoint.sh /app/entrypoint.sh
