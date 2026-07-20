@@ -2,25 +2,26 @@
 Document ingestion pipeline: parse → chunk → embed → store.
 
 Parsers:
-  - PDF:  PyMuPDF (fitz) — fast, accurate page numbers, font-size header detection
+  - PDF:  PyMuPDF (fitz) — fast zero-dependency text extraction,
+          font-size heuristic for heading detection, no model downloads
   - DOCX: python-docx   — heading-style-aware, preserves document structure
 
 Chunking:
   - Group content by detected section titles
-  - Split oversized sections with character overlap (~17%)
+  - Split oversized sections with character overlap (~15%)
   - Assign sequential passage_index per page
 
 Pipeline:
   1. Parse → list of {page, text, category} elements
   2. Chunk by section boundaries + overlap
-  3. Embed with nomic-embed-text (local)
+  3. Embed with nomic-embed-text-v1.5 (FastEmbed ONNX)
   4. Store vectors in ChromaDB + metadata in SQLite
   5. Rebuild BM25 index
 """
 from __future__ import annotations
 
+import re
 import uuid
-from pathlib import Path
 
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
@@ -30,60 +31,56 @@ from backend.models import Chunk, Document
 from backend.services import bm25_index, embeddings, progress as prog, vectorstore
 
 # Chunking config
-MAX_CHUNK_CHARS = 1500
-OVERLAP_CHARS = 250      # ~17% overlap
+MAX_CHUNK_CHARS = 1000
+OVERLAP_CHARS = 150      # ~15% overlap
 MIN_SECTION_CHARS = 150  # merge tiny paragraphs below this
-HEADER_FONT_THRESHOLD = 13.0  # PDF font size above which text is treated as a heading
+
+# Font size threshold for heading detection in PyMuPDF
+_HEADING_FONT_SIZE = 14.0
 
 
 # ---------------------------------------------------------------------------
 # Parsers
 # ---------------------------------------------------------------------------
 
-def _parse_pdf(file_path: str) -> list[dict]:
+def _parse_pdf_pymupdf(file_path: str) -> list[dict]:
     """
-    Extract structured elements from a PDF using PyMuPDF.
-    Returns list of {page, text, category} where category is 'Title' or 'NarrativeText'.
-    Font size heuristic identifies headings.
+    Parse PDF using PyMuPDF (fitz) — no PyTorch, no model downloads.
+
+    Iterates text blocks per page. Uses font-size heuristic (≥14pt) to
+    classify blocks as Title (heading) vs NarrativeText (body).
+    Returns {page, text, category} list compatible with _chunk().
     """
-    doc = fitz.open(file_path)
     elements: list[dict] = []
+    doc = fitz.open(file_path)
 
     for page_num, page in enumerate(doc, start=1):
-        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-
+        blocks = page.get_text("dict")["blocks"]
         for block in blocks:
-            if block.get("type") != 0:  # skip non-text (images etc.)
+            if block.get("type") != 0:  # 0 = text, 1 = image — skip images
                 continue
 
-            block_lines: list[str] = []
+            lines: list[str] = []
             max_font_size = 0.0
 
             for line in block.get("lines", []):
-                line_parts: list[str] = []
+                span_texts: list[str] = []
                 for span in line.get("spans", []):
-                    text = span.get("text", "").strip()
-                    if text:
-                        line_parts.append(text)
-                        max_font_size = max(max_font_size, span.get("size", 0.0))
-                if line_parts:
-                    block_lines.append(" ".join(line_parts))
+                    t = span.get("text", "").strip()
+                    if t:
+                        span_texts.append(t)
+                    sz = span.get("size", 0.0)
+                    if sz > max_font_size:
+                        max_font_size = sz
+                if span_texts:
+                    lines.append(" ".join(span_texts))
 
-            text = " ".join(block_lines).strip()
+            text = "\n".join(lines).strip()
             if not text:
                 continue
 
-            # Heuristic: large font + short line → heading
-            is_title = (
-                max_font_size >= HEADER_FONT_THRESHOLD
-                and len(text) < 200
-                and not text.endswith(".")
-            )
-            elements.append({
-                "page": page_num,
-                "text": text,
-                "category": "Title" if is_title else "NarrativeText",
-            })
+            category = "Title" if max_font_size >= _HEADING_FONT_SIZE else "NarrativeText"
+            elements.append({"page": page_num, "text": text, "category": category})
 
     doc.close()
     return elements
@@ -123,7 +120,7 @@ def _parse_docx(file_path: str) -> list[dict]:
 
 def _parse(file_path: str, file_type: str) -> list[dict]:
     if file_type == "pdf":
-        return _parse_pdf(file_path)
+        return _parse_pdf_pymupdf(file_path)
     if file_type == "docx":
         return _parse_docx(file_path)
     raise ValueError(f"Unsupported file type: {file_type}")
@@ -264,7 +261,7 @@ def ingest_document(file_path: str, doc_id: int, db: Session) -> int:
         total = len(chunk_records)
         prog.update(doc_id, "embedding", f"Embedding {total} chunks...", percent=20)
         texts = [c["text"] for c in chunk_records]
-        BATCH_SIZE = 16
+        BATCH_SIZE = 8
         vectors: list[list[float]] = []
         for i in range(0, total, BATCH_SIZE):
             vectors.extend(embeddings.embed_documents(texts[i : i + BATCH_SIZE]))

@@ -2,7 +2,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    gemini_api_key: str = ""  # kept for backward compat, no longer used
     database_url: str = "sqlite:///./data/app.db"
     chroma_path: str = "./data/chroma"
     upload_dir: str = "./uploads"

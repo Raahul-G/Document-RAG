@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Stage 1: Build frontend
 FROM node:20-alpine AS frontend-builder
 WORKDIR /build/frontend
@@ -9,7 +10,8 @@ RUN npm run build
 # Stage 2: Runtime
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ cmake libgomp1 libheif-dev libffi-dev \
+    gcc g++ cmake libgomp1 libffi-dev \
+    libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,9 +27,10 @@ ENV UV_PYTHON=python3.12
 ENV GGML_BLAS=OFF
 ENV GGML_CUDA=OFF
 
-# Install Python dependencies only (skip building the local project package)
+# Install Python dependencies — BuildKit cache mount keeps downloaded wheels across builds
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
 COPY backend/ ./backend/
@@ -38,8 +41,19 @@ COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 # Create data directories
 RUN mkdir -p /data /uploads /models
 
-# Pre-download embedding model at build time so no runtime download is needed
-RUN /app/.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# Pre-download FastEmbed embedding model at build time
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    /app/.venv/bin/python -c "\
+from fastembed import TextEmbedding; \
+TextEmbedding('nomic-ai/nomic-embed-text-v1.5'); \
+print('Embedding model cached.')"
+
+# Pre-download FastEmbed cross-encoder reranker at build time
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    /app/.venv/bin/python -c "\
+from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+TextCrossEncoder(model_name='Xenova/ms-marco-MiniLM-L-6-v2'); \
+print('Cross-encoder cached.')"
 
 # Copy and register the startup script
 COPY entrypoint.sh /app/entrypoint.sh
@@ -54,7 +68,7 @@ ENV CORS_ORIGINS=*
 ENV DATABASE_URL=sqlite:////data/app.db
 ENV CHROMA_PATH=/data/chroma
 ENV UPLOAD_DIR=/uploads
-ENV LLM_MODEL_PATH=/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+ENV LLM_MODEL_PATH=/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
 ENV LLM_N_CTX=8192
 ENV LLM_N_THREADS=4
 ENV LLM_N_GPU_LAYERS=0

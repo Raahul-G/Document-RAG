@@ -13,7 +13,7 @@ from backend.services import generation, retrieval
 
 logger = logging.getLogger(__name__)
 
-HISTORY_WINDOW = 5  # number of prior Q&A turns passed to Gemini
+HISTORY_WINDOW = 5  # number of prior Q&A turns passed to the LLM
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -90,10 +90,9 @@ def query_documents(payload: QueryIn, db: Session = Depends(get_db)):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Gemini is instructed to cite exact passages but often paraphrases the text
-    # field in its JSON response.  Restore the original retrieved chunk text so
-    # the snippet highlighter always searches for text that actually exists in
-    # the PDF verbatim.
+    # The LLM may paraphrase the source text in its JSON response.
+    # Restore the original retrieved chunk text so the snippet highlighter
+    # always searches for text that actually exists in the PDF verbatim.
     _chunk_text_by_key = {
         (c["metadata"]["doc_name"], c["metadata"]["page_number"], c["metadata"]["passage_index"]): c["text"]
         for c in chunks
@@ -197,7 +196,7 @@ def query_documents_stream(payload: QueryIn, db: Session = Depends(get_db)):
     question = payload.question
 
     # All retrieved chunks are candidate sources (streaming mode — no per-passage
-    # citation from Gemini, so expose everything the retriever ranked).
+    # citation from LLM, so expose everything the retriever ranked).
     candidate_sources = [_chunk_to_source(c) for c in chunks]
 
     def event_stream():

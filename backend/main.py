@@ -16,28 +16,70 @@ from backend.routers import documents, query, sessions, snippets
 _llm_ready = False
 
 
+def _maybe_migrate_chroma() -> None:
+    """
+    Detect stale vectors with wrong embedding dimension and clear all data.
+    Must run before any BM25 or vector reads in the lifespan block.
+    """
+    from backend.database import SessionLocal
+    from backend.models import Chunk
+    from backend.services import bm25_index, vectorstore
+
+    try:
+        collection = vectorstore.get_collection()
+        if collection.count() == 0:
+            return  # empty — nothing to migrate
+
+        result = collection.get(limit=1, include=["embeddings"])
+        embeddings = result.get("embeddings") or []
+        if not embeddings:
+            return
+
+        dim = len(embeddings[0])
+        if dim == 768:
+            return  # correct dimension for nomic-embed-text-v1.5
+
+        print(f"Migration: detected {dim}-dim vectors (expected 768). Clearing stale data...")
+        vectorstore.reset_collection()
+        bm25_index.invalidate_pickle()
+
+        db = SessionLocal()
+        try:
+            db.query(Chunk).delete()
+            db.commit()
+        finally:
+            db.close()
+
+        print("Migration: stale data cleared. Re-ingest documents after restart.")
+    except Exception as e:
+        print(f"Migration guard error (non-fatal): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create required directories
+    # 1. Directories and DB tables
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.chroma_path).mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(parents=True, exist_ok=True)
-
-    # Create all DB tables
     Base.metadata.create_all(bind=engine)
 
-    # Build BM25 index from existing chunks
-    from backend.services import bm25_index, vectorstore
-    existing_chunks = vectorstore.get_all_chunks()
-    bm25_index.build_index(existing_chunks)
-    print(f"BM25 index built: {len(existing_chunks)} chunks loaded")
+    # 2. Migration guard — must complete before any BM25 or vector reads
+    _maybe_migrate_chroma()
 
-    # Warm up the local LLM so the first query has no cold-start delay
+    # 3. BM25 load-or-build
+    from backend.services import bm25_index, vectorstore
+    if bm25_index.load_index():
+        print(f"BM25 index loaded from disk ({len(bm25_index._corpus)} chunks)")
+    else:
+        existing_chunks = vectorstore.get_all_chunks()
+        bm25_index.build_index(existing_chunks)
+        print(f"BM25 index built: {len(existing_chunks)} chunks loaded")
+
+    # 4. Warm up the local LLM so the first query has no cold-start delay
     global _llm_ready
-    from pathlib import Path as _Path
     from backend.services.generation import _get_llm
     model_path = settings.llm_model_path
-    if _Path(model_path).exists():
+    if Path(model_path).exists():
         print(f"Loading LLM from {model_path} ...")
         _get_llm()
         print("LLM ready.")

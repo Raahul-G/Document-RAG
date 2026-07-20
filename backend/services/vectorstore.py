@@ -99,3 +99,18 @@ def get_all_chunks() -> list[dict]:
         {"text": text, "metadata": meta}
         for text, meta in zip(results["documents"], results["metadatas"])
     ]
+
+
+def reset_collection() -> None:
+    """Delete and recreate the ChromaDB collection (used for embedding dimension migration)."""
+    global _client, _collection
+    if _client is None:
+        _client = chromadb.PersistentClient(
+            path=settings.chroma_path,
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+    try:
+        _client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    _collection = None

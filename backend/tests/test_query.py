@@ -2,7 +2,7 @@
 Tests for backend/routers/query.py
 
 Covers:
-- Non-streaming source text restoration: Gemini-paraphrased text in `sources`
+- Non-streaming source text restoration: LLM-paraphrased text in `sources`
   is replaced with the original retrieved chunk text so the snippet highlighter
   always searches for verbatim PDF content.
 - Source text is NOT replaced when the (doc_name, page, passage_index) key
@@ -51,7 +51,7 @@ def _generation_result(answer: str, sources: list[dict], found: bool = True) -> 
 
 class TestSourceTextRestoration:
     """
-    The non-streaming endpoint must replace Gemini's paraphrased source text
+    The non-streaming endpoint must replace LLM-paraphrased source text
     with the original retrieved chunk text before returning to the client.
     This prevents the snippet highlighter from searching for text that doesn't
     exist verbatim in the PDF.
@@ -59,11 +59,11 @@ class TestSourceTextRestoration:
 
     @patch("backend.routers.query.retrieval.retrieve")
     @patch("backend.routers.query.generation.generate_answer")
-    def test_gemini_paraphrase_replaced_with_original_text(
+    def test_llm_paraphrase_replaced_with_original_text(
         self, mock_gen, mock_retrieve
     ):
         original_text = "Original verbatim chunk text from the PDF."
-        paraphrased_text = "Gemini rewrote this as a paraphrase of the passage."
+        paraphrased_text = "LLM rewrote this as a paraphrase of the passage."
 
         chunk = _make_chunk(
             doc_name="report.pdf", page=2, passage_index=3, text=original_text
@@ -77,7 +77,7 @@ class TestSourceTextRestoration:
                     "page": 2,
                     "passage_index": 3,
                     "section_title": "Introduction",
-                    "text": paraphrased_text,  # Gemini paraphrased this
+                    "text": paraphrased_text,  # LLM paraphrased this
                 }
             ],
         )
@@ -92,7 +92,7 @@ class TestSourceTextRestoration:
         assert data["found"] is True
         assert len(data["sources"]) == 1
         assert data["sources"][0]["text"] == original_text, (
-            "Gemini paraphrase should be replaced with original chunk text"
+            "LLM paraphrase should be replaced with original chunk text"
         )
 
     @patch("backend.routers.query.retrieval.retrieve")

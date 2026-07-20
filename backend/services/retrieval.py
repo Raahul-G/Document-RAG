@@ -11,14 +11,14 @@ Flow:
   7. Fallback — if all CE probs < 0.1, bypass reranker and use raw retrieval order
   8. Combined score = 0.5 * vector_sim + 0.3 * bm25_norm + 0.2 * ce_prob
   9. Return 1–MAX_CHUNKS_TO_LLM chunks based on score-ratio cutoff
-  Gate 2 (found:false) lives in Gemini — it decides if chunks answer the question.
+  Gate 2 (found:false) lives in the LLM — it decides if chunks answer the question.
 """
 from __future__ import annotations
 
 import logging
 import math
 
-from sentence_transformers import CrossEncoder
+from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 from backend.services import bm25_index, vectorstore
 from backend.services.embeddings import embed_query
@@ -34,11 +34,11 @@ BM25_WEIGHT = 0.3
 CE_WEIGHT = 0.2
 
 # Gate 1 thresholds (retrieval coverage signals, NOT cross-encoder logits)
-COVERAGE_VECTOR_MIN = 0.25      # min top-1 vector similarity to pass Gate 1
-FALLBACK_CE_PROB_MIN = 0.10     # if max CE prob below this → bypass reranker entirely
+COVERAGE_VECTOR_MIN = 0.35      # min top-1 vector similarity to pass Gate 1
+FALLBACK_CE_PROB_MIN = 0.15     # if max CE prob below this → bypass reranker entirely
 
-_reranker: CrossEncoder | None = None
-RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_reranker: TextCrossEncoder | None = None
+RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 
 
 def _sigmoid(x: float) -> float:
@@ -46,10 +46,10 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, x))))
 
 
-def _get_reranker() -> CrossEncoder:
+def _get_reranker() -> TextCrossEncoder:
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder(RERANKER_MODEL)
+        _reranker = TextCrossEncoder(model_name=RERANKER_MODEL)
     return _reranker
 
 
@@ -128,8 +128,7 @@ def retrieve(
 
     # 5. Cross-encoder → sigmoid probabilities (ranking only, no hard gate)
     reranker = _get_reranker()
-    pairs = [[query, c["text"]] for c in candidates]
-    raw_scores = reranker.predict(pairs).tolist()
+    raw_scores = list(reranker.rerank(query=query, documents=[c["text"] for c in candidates]))
     ce_probs = [_sigmoid(s) for s in raw_scores]
 
     for chunk, ce_prob in zip(candidates, ce_probs):

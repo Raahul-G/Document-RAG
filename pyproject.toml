@@ -12,13 +12,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.12",
     "aiofiles>=24.1.0",
-    "pdfminer-six>=20260107",
     "python-docx>=1.2.0",
-    "sentence-transformers>=5.4.1",
-    "einops>=0.8.2",
+    "fastembed>=0.3.6",
     "chromadb>=1.5.7",
     "rank-bm25>=0.2.2",
-    "pi-heif>=1.3.0",
     "pymupdf>=1.27.2.2",
     "llama-cpp-python>=0.3.0",
 ]
@@ -40,22 +37,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
-
-# --- UV SOURCE CONTROL ENGINE ---
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-
-[tool.uv]
-# This prevents sub-dependencies from attempting to request NVIDIA CUDA drivers inside the container
-override-dependencies = [
-    "nvidia-cublas-cu12; sys_platform == 'linux'",
-    "nvidia-cuda-runtime-cu12; sys_platform == 'linux'",
-    "nvidia-cusparse-cu12; sys_platform == 'linux'",
-    "nvidia-cusparselt-cu13; sys_platform == 'linux'"
-]
