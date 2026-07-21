@@ -42,20 +42,6 @@ COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 # Create data directories
 RUN mkdir -p /data /uploads /models
 
-# Pre-download FastEmbed embedding model at build time
-RUN --mount=type=cache,target=/root/.cache/huggingface \
-    /app/.venv/bin/python -c "\
-from fastembed import TextEmbedding; \
-TextEmbedding('nomic-ai/nomic-embed-text-v1.5'); \
-print('Embedding model cached.')"
-
-# Pre-download FastEmbed cross-encoder reranker at build time
-RUN --mount=type=cache,target=/root/.cache/huggingface \
-    /app/.venv/bin/python -c "\
-from fastembed.rerank.cross_encoder import TextCrossEncoder; \
-TextCrossEncoder(model_name='Xenova/ms-marco-MiniLM-L-6-v2'); \
-print('Cross-encoder cached.')"
-
 # Copy and register the startup script
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
@@ -76,6 +62,7 @@ ENV LLM_N_GPU_LAYERS=0
 ENV LLM_TEMPERATURE=0.0
 ENV LLM_MAX_TOKENS=2048
 ENV BM25_PKL_PATH=/data/bm25.pkl
+ENV FASTEMBED_CACHE_PATH=/data/fastembed_cache
 
 # Auto-create persistent volumes when run from Docker Desktop
 VOLUME ["/data", "/uploads", "/models"]

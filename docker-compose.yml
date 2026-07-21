@@ -14,6 +14,7 @@ services:
       - LLM_N_THREADS=4
       - LLM_N_GPU_LAYERS=0
       - BM25_PKL_PATH=/data/bm25.pkl
+      - FASTEMBED_CACHE_PATH=/data/fastembed_cache
     volumes:
       - app_data:/data
       - app_uploads:/uploads
