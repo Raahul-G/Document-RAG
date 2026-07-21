@@ -2,9 +2,10 @@
 Document ingestion pipeline: parse → chunk → embed → store.
 
 Parsers:
-  - PDF:  PyMuPDF (fitz) — fast zero-dependency text extraction,
-          font-size heuristic for heading detection, no model downloads
-  - DOCX: python-docx   — heading-style-aware, preserves document structure
+  - PDF:  OpenDataLoader PDF (Java-based, CPU-only) — layout-aware extraction
+          with proper heading detection, table flattening, list handling, and
+          correct reading order on multi-column layouts. No PyTorch required.
+  - DOCX: python-docx — heading-style-aware, preserves document structure
 
 Chunking:
   - Group content by detected section titles
@@ -20,10 +21,12 @@ Pipeline:
 """
 from __future__ import annotations
 
-import re
+import json
+import os
+import tempfile
 import uuid
 
-import fitz  # PyMuPDF
+import opendataloader_pdf
 from docx import Document as DocxDocument
 from sqlalchemy.orm import Session
 
@@ -35,56 +38,106 @@ MAX_CHUNK_CHARS = 1000
 OVERLAP_CHARS = 150      # ~15% overlap
 MIN_SECTION_CHARS = 150  # merge tiny paragraphs below this
 
-# Font size threshold for heading detection in PyMuPDF
-_HEADING_FONT_SIZE = 14.0
+# OpenDataLoader assigns heading levels 1–11.
+# Levels ≤ 6 are genuine section headings (Title); deeper levels are
+# sub-sub labels that read as body text in context.
+_HEADING_LEVEL_MAX = 6
 
 
 # ---------------------------------------------------------------------------
-# Parsers
+# PDF parser — OpenDataLoader
 # ---------------------------------------------------------------------------
 
-def _parse_pdf_pymupdf(file_path: str) -> list[dict]:
+def _flatten_kid(kid: dict) -> list[dict]:
     """
-    Parse PDF using PyMuPDF (fitz) — no PyTorch, no model downloads.
+    Recursively convert one OpenDataLoader JSON element into
+    {page, text, category} dicts compatible with _chunk().
 
-    Iterates text blocks per page. Uses font-size heuristic (≥14pt) to
-    classify blocks as Title (heading) vs NarrativeText (body).
-    Returns {page, text, category} list compatible with _chunk().
+    Handled types:
+      heading   → Title (level ≤ 6) or NarrativeText (level > 6)
+      paragraph → NarrativeText
+      caption   → NarrativeText
+      list      → one NarrativeText per list item (recurses into nested kids)
+      table     → one NarrativeText block, rows flattened as "c1 | c2 | c3"
+      image     → skipped
     """
+    t = kid["type"]
+    page = kid.get("page number", 1)
+
+    if t == "heading":
+        content = kid.get("content", "").strip()
+        if not content:
+            return []
+        level = kid.get("heading level", 1)
+        category = "Title" if level <= _HEADING_LEVEL_MAX else "NarrativeText"
+        return [{"page": page, "text": content, "category": category}]
+
+    if t in ("paragraph", "caption"):
+        content = kid.get("content", "").strip()
+        return [{"page": page, "text": content, "category": "NarrativeText"}] if content else []
+
+    if t == "list":
+        results: list[dict] = []
+        for item in kid.get("list items", []):
+            content = item.get("content", "").strip()
+            ipage = item.get("page number", page)
+            if content:
+                results.append({"page": ipage, "text": content, "category": "NarrativeText"})
+            for nested in item.get("kids", []):
+                results.extend(_flatten_kid(nested))
+        return results
+
+    if t == "table":
+        # Flatten each row to "cell1 | cell2 | ..." so numeric relationships
+        # between columns are preserved and the table embeds as one unit.
+        lines: list[str] = []
+        for row in kid.get("rows", []):
+            cells: list[str] = []
+            for cell in row.get("cells", []):
+                cell_text = " ".join(
+                    c_kid.get("content", "").strip()
+                    for c_kid in cell.get("kids", [])
+                    if c_kid.get("content", "").strip()
+                )
+                cells.append(cell_text)
+            if any(cells):
+                lines.append(" | ".join(cells))
+        text = "\n".join(lines)
+        return [{"page": page, "text": text, "category": "NarrativeText"}] if text.strip() else []
+
+    return []  # skip images and unknown types
+
+
+def _parse_pdf_opendataloader(file_path: str) -> list[dict]:
+    """
+    Parse a PDF with OpenDataLoader PDF (Java, CPU-only, no PyTorch).
+
+    Converts to structured JSON in a temp directory, then flattens each
+    element via _flatten_kid(). Handles multi-column reading order,
+    scanned PDFs (built-in OCR), tables, and lists natively.
+
+    Returns list of {page, text, category} compatible with _chunk().
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        opendataloader_pdf.convert(
+            input_path=[file_path],
+            output_dir=tmpdir,
+            format="json",
+        )
+        base = os.path.splitext(os.path.basename(file_path))[0]
+        json_path = os.path.join(tmpdir, base + ".json")
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+
     elements: list[dict] = []
-    doc = fitz.open(file_path)
-
-    for page_num, page in enumerate(doc, start=1):
-        blocks = page.get_text("dict")["blocks"]
-        for block in blocks:
-            if block.get("type") != 0:  # 0 = text, 1 = image — skip images
-                continue
-
-            lines: list[str] = []
-            max_font_size = 0.0
-
-            for line in block.get("lines", []):
-                span_texts: list[str] = []
-                for span in line.get("spans", []):
-                    t = span.get("text", "").strip()
-                    if t:
-                        span_texts.append(t)
-                    sz = span.get("size", 0.0)
-                    if sz > max_font_size:
-                        max_font_size = sz
-                if span_texts:
-                    lines.append(" ".join(span_texts))
-
-            text = "\n".join(lines).strip()
-            if not text:
-                continue
-
-            category = "Title" if max_font_size >= _HEADING_FONT_SIZE else "NarrativeText"
-            elements.append({"page": page_num, "text": text, "category": category})
-
-    doc.close()
+    for kid in data.get("kids", []):
+        elements.extend(_flatten_kid(kid))
     return elements
 
+
+# ---------------------------------------------------------------------------
+# DOCX parser — python-docx
+# ---------------------------------------------------------------------------
 
 def _parse_docx(file_path: str) -> list[dict]:
     """
@@ -120,7 +173,7 @@ def _parse_docx(file_path: str) -> list[dict]:
 
 def _parse(file_path: str, file_type: str) -> list[dict]:
     if file_type == "pdf":
-        return _parse_pdf_pymupdf(file_path)
+        return _parse_pdf_opendataloader(file_path)
     if file_type == "docx":
         return _parse_docx(file_path)
     raise ValueError(f"Unsupported file type: {file_type}")

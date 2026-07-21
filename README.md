@@ -55,7 +55,7 @@ Upload (PDF/DOCX)
              └──────┬───────┘
                     │
              ┌──────▼───────┐
-             │  BM25 Index  │ (in-memory, rebuilt on startup)
+             │  BM25 Index  │ (pickle-persisted, loaded from disk or rebuilt)
              └──────┬───────┘
                     │
              User Query
@@ -96,11 +96,13 @@ Upload (PDF/DOCX)
 
 ### 1. Document Ingestion
 
-**Supported formats:** PDF (via PyMuPDF), DOCX (via python-docx)
+**Supported formats:** PDF (via OpenDataLoader PDF), DOCX (via python-docx)
 
-**PDF parsing** uses PyMuPDF's block-level extraction with font metadata. Spans with font size ≥ 13pt, length < 200 characters, and no trailing period are classified as section headings. This preserves document structure without relying on heuristics like bold detection.
+**PDF parsing** uses OpenDataLoader PDF (Java-based, CPU-only) which produces a structured JSON element tree from each PDF. Headings are identified from the PDF's structural tags (`heading_level` ≤ 6 → Title; deeper levels → NarrativeText) — no font-size heuristics. Tables are flattened row-by-row as `col1 | col2 | col3` and kept as a single semantic unit. Lists are extracted per item. Multi-column reading order is handled automatically via XY-Cut++. Scanned PDFs are supported via built-in OCR (80+ languages). PyTorch is not required.
 
-**DOCX parsing** reads paragraph styles directly. Paragraphs with a style name containing `heading` or `title` are treated as section boundaries.
+PyMuPDF is still used by the snippet viewer to **render** PDF pages as PNG images — it is not involved in text extraction.
+
+**DOCX parsing** reads paragraph styles directly. Paragraphs with a style name containing `heading` or `title` are treated as section boundaries. Page numbers are estimated from character count (~2,000 chars per page) since Word does not expose real page breaks programmatically.
 
 **Deduplication:** Files are SHA-256 hashed at upload time. Re-uploading an identical file returns HTTP 409.
 
@@ -110,13 +112,13 @@ Upload (PDF/DOCX)
 
 | Parameter | Value |
 |-----------|-------|
-| Max chunk size | 1,500 characters |
-| Overlap | 250 characters (~17%) |
+| Max chunk size | 1,000 characters |
+| Overlap | 150 characters (~15%) |
 | Min section size | 150 characters (merged upward if smaller) |
 
-Chunking is **section-aware**: the parser first segments the document into headed sections, then splits oversized sections at word boundaries with the configured overlap. This avoids breaking sentences mid-word and keeps semantically related content together.
+Chunking is **section-aware**: the parser first segments the document into headed sections, then splits oversized sections at word boundaries with the configured overlap. Sub-threshold sections (< 150 chars) are carried forward and prepended to the next section rather than silently discarded.
 
-Each chunk is assigned a `passage_index` within its page, which the frontend uses to render precise in-document highlights via the snippet viewer.
+Each chunk is assigned a `passage_index` (sequential counter per page) which the frontend uses to render precise in-document highlights via the snippet viewer.
 
 ---
 
@@ -126,17 +128,18 @@ Each chunk is assigned a `passage_index` within its page, which the frontend use
 |----------|-------|
 | Dimensions | 768 |
 | Parameters | ~137M |
-| Provider | Hugging Face (sentence-transformers) |
-| Runs locally | Yes — CPU/GPU |
+| Runtime | FastEmbed ONNX (int8-quantized) |
+| PyTorch required | No |
+| Runs locally | Yes — CPU |
 
-Nomic Embed v1.5 uses **instruction prefixes** to distinguish indexing from retrieval:
+Nomic Embed v1.5 requires **task prefixes** (it was trained with them — omitting lowers recall):
 
 ```
 Indexing:  "search_document: {chunk_text}"
 Query:     "search_query: {query_text}"
 ```
 
-All embeddings are L2-normalised before storage, making dot product equivalent to cosine similarity.
+FastEmbed downloads the ONNX int8-quantized model at first use and caches it under `~/.cache/fastembed`. In the Docker image, both the embedding model and the reranker are downloaded at build time so the container starts without any download delay.
 
 ---
 
@@ -151,6 +154,8 @@ All embeddings are L2-normalised before storage, making dot product equivalent t
 
 ChromaDB runs embedded inside the FastAPI process — no separate container or network call.
 
+**Startup migration guard:** On startup, the server probes the stored vector dimension. If it detects a mismatch (e.g. 384-dim vectors from a previous `all-MiniLM-L6-v2` setup instead of the expected 768-dim), it automatically clears the ChromaDB collection, the SQLite chunk table, and the BM25 pickle before loading proceeds. This prevents silent score degradation from stale embeddings.
+
 ---
 
 ### 5. BM25 Hybrid Search
@@ -158,21 +163,26 @@ ChromaDB runs embedded inside the FastAPI process — no separate container or n
 | Property | Value |
 |----------|-------|
 | Library | `rank-bm25` (BM25Okapi variant) |
-| Index | In-memory, rebuilt on startup and after each ingest |
+| Persistence | Pickle file (`BM25_PKL_PATH`, default `data/bm25.pkl`) |
+| Startup | Loads from disk in ~50ms; rebuilds from ChromaDB only if pickle is missing or invalid |
 | Tokenisation | Regex — strips punctuation, lowercases |
 
-BM25 excels at exact keyword matches where dense vectors underperform — acronyms, proper nouns, version numbers, and rare technical terms.
+BM25 excels at exact keyword matches where dense vectors underperform — acronyms, proper nouns, version numbers, and rare technical terms. After each document ingestion, the index is fully rebuilt (BM25Okapi does not support incremental updates) and re-persisted to disk.
 
 ---
 
-### 6. Cross-Encoder Reranking — `cross-encoder/ms-marco-MiniLM-L-6-v2`
+### 6. Cross-Encoder Reranking — `Xenova/ms-marco-MiniLM-L-6-v2`
 
 | Property | Value |
 |----------|-------|
 | Parameters | ~22M |
+| Runtime | FastEmbed ONNX (via `fastembed.rerank.cross_encoder.TextCrossEncoder`) |
+| PyTorch required | No |
 | Input | (query, passage) pair |
-| Output | Relevance logit → sigmoid probability |
+| Output | Raw relevance logit → sigmoid probability |
 | Runs locally | Yes — CPU |
+
+The ONNX export (`Xenova/ms-marco-MiniLM-L-6-v2`) uses the same weights as `cross-encoder/ms-marco-MiniLM-L-6-v2` — different runtime, zero precision loss.
 
 **Final scoring:**
 
@@ -182,7 +192,11 @@ final_score = 0.5 × vector_similarity
             + 0.2 × cross_encoder_probability
 ```
 
-**Dynamic chunk selection:** Chunks are included while their score is ≥ 50% of the top chunk's score, up to a hard cap of 5 chunks.
+**Fallback:** If all cross-encoder probabilities are below 0.15, the reranker is bypassed entirely and raw hybrid retrieval order is used (prevents noisy reranking on out-of-domain queries).
+
+**Dynamic chunk selection:** Chunks scoring ≥ 50% of the top chunk's score are included, up to a hard cap of 5 chunks.
+
+**Gate 1 (coverage check):** If the top vector similarity is below 0.35 and BM25 returns zero hits, the query is rejected before reaching the LLM with `found: false`. This fires only when the corpus genuinely has no relevant content for the question.
 
 ---
 
@@ -208,12 +222,12 @@ final_score = 0.5 × vector_similarity
 | Runtime | llama-cpp-python (embedded in FastAPI process) |
 | Parameters | 3.8B |
 | File size | ~2.5 GB |
-| RAM required | ~5 GB (CPU) |
-| Context window | 128k tokens |
+| RAM required | ~3.5 GB (model) + ~1 GB (app) |
+| Context window | 8,192 tokens (configurable via `LLM_N_CTX`) |
 | Requires API key | No |
 | Fully offline | Yes |
 
-Non-streaming path uses grammar-constrained JSON decoding (`LlamaGrammar`) to guarantee valid structured output. Streaming path uses the `NOT_FOUND` sentinel approach.
+The model is warmed up at server startup so the first query has no cold-start delay. Non-streaming path uses grammar-constrained JSON decoding (`LlamaGrammar`) to guarantee valid structured output. Streaming path uses a `NOT_FOUND` sentinel approach.
 
 ---
 
@@ -226,11 +240,11 @@ Before retrieval, the system rewrites anaphoric follow-up questions into self-co
 > Turn 1: "What are the revenue figures for France?"
 > Turn 2: "What about Germany?" → rewritten to "What are the revenue figures for Germany?"
 
-This ensures the retrieval step gets a semantically complete query even when the user references prior context with pronouns or short phrases.
+The rewritten query is used for retrieval only — the original question is always passed to the LLM for answer generation.
 
 ### @Mention Document Scoping
 
-Type `@` in the chat input to scope retrieval to specific documents. Multiple documents can be pinned simultaneously.
+Type `@` in the chat input to scope retrieval to specific documents. Multiple documents can be pinned simultaneously. Selected document IDs are passed as a filter to both the vector search and BM25 search.
 
 ### Snippet Viewer
 
@@ -249,13 +263,15 @@ Responses stream token-by-token via Server-Sent Events. The frontend renders tok
 | Backend | FastAPI + Uvicorn | FastAPI + Uvicorn |
 | Database | SQLite (SQLAlchemy) | SQLite (SQLAlchemy) |
 | Vector store | ChromaDB (embedded) | ChromaDB (embedded) |
-| Embeddings | nomic-embed-text-v1.5 | nomic-embed-text-v1.5 |
+| Embeddings | nomic-embed-text-v1.5 (FastEmbed ONNX) | nomic-embed-text-v1.5 (FastEmbed ONNX) |
 | BM25 | rank-bm25 (Okapi) | rank-bm25 (Okapi) |
-| Reranker | ms-marco-MiniLM-L-6-v2 | ms-marco-MiniLM-L-6-v2 |
+| Reranker | Xenova/ms-marco-MiniLM-L-6-v2 (FastEmbed ONNX) | Xenova/ms-marco-MiniLM-L-6-v2 (FastEmbed ONNX) |
 | LLM | Gemini 2.5 Flash | Phi-4-mini Q4_K_M (llama-cpp-python) |
-| PDF parsing | PyMuPDF | PyMuPDF |
+| PDF parsing (text) | PyMuPDF | OpenDataLoader PDF (Java, CPU) |
+| PDF rendering (snippets) | PyMuPDF | PyMuPDF |
 | DOCX parsing | python-docx | python-docx |
-| Frontend | React 19 + Vite 8 + Tailwind CSS 4 | React 19 + Vite 8 + Tailwind CSS 4 |
+| PyTorch | Not required | Not required |
+| Frontend | React 19 + Vite 6 + Tailwind CSS 4 | React 19 + Vite 6 + Tailwind CSS 4 |
 | Packaging | Docker (multi-stage), uv | Docker (multi-stage), uv |
 
 ---
@@ -280,21 +296,23 @@ Open **http://localhost:8000**.
 
 ### `localllm` branch — Fully Local
 
-**Prerequisites:** Docker Desktop, ~6 GB RAM, ~2.5 GB disk for the model
+**Prerequisites:** Docker Desktop, ~5 GB RAM, ~2.5 GB disk for the model
 
 ```bash
 git checkout localllm
 
-# Download the model once (into the project root ./models/)
+# Download the model once
 pip install huggingface_hub
-hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+huggingface-cli download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
   --include "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
   --local-dir ./models/
 
 docker compose up --build
 ```
 
-Open **http://localhost:8000**. The model loads on first query (~10–20s cold start on CPU).
+Open **http://localhost:8000**. The model loads on startup (~10–20s on CPU), and a loading screen is shown until it is ready.
+
+The first `docker compose build` downloads the FastEmbed embedding model (~270 MB) and the ONNX reranker (~23 MB) into the image layer via BuildKit cache mounts, so subsequent builds skip these downloads even if the layer is invalidated.
 
 ---
 
@@ -302,10 +320,9 @@ Open **http://localhost:8000**. The model loads on first query (~10–20s cold s
 
 | Volume | Contents |
 |--------|----------|
-| `app_data` | SQLite database + ChromaDB index |
+| `app_data` | SQLite database, ChromaDB index, BM25 pickle |
 | `app_uploads` | Uploaded PDF/DOCX files |
-| `hf_cache` | HuggingFace model cache (embeddings + reranker) |
-| `./models` (`localllm` only) | GGUF model file (bind mount, read-only) |
+| `models_data` | GGUF model file (`localllm` only) |
 
 Data persists across container restarts. To wipe everything:
 
@@ -340,7 +357,7 @@ git checkout localllm
 uv sync
 
 # Download model once (can be stored anywhere)
-uv run hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+uv run huggingface-cli download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
   --include "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
   --local-dir ./models/
 
@@ -375,11 +392,12 @@ Backend: **http://localhost:8000** — Frontend dev server: **http://localhost:5
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MODEL_PATH` | `./models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf` | Path to GGUF model file |
-| `LLM_N_CTX` | `8192` | Context window tokens |
+| `LLM_N_CTX` | `8192` | Context window (tokens) |
 | `LLM_N_THREADS` | `4` | CPU threads for inference |
 | `LLM_N_GPU_LAYERS` | `0` | `0` = CPU only, `-1` = all layers on GPU |
 | `LLM_TEMPERATURE` | `0.0` | Sampling temperature |
 | `LLM_MAX_TOKENS` | `2048` | Maximum tokens per response |
+| `BM25_PKL_PATH` | `data/bm25.pkl` | Path for BM25 pickle persistence |
 | `DATABASE_URL` | `sqlite:///./data/app.db` | SQLAlchemy connection string |
 | `CHROMA_PATH` | `./data/chroma` | ChromaDB persistence directory |
 | `UPLOAD_DIR` | `./uploads` | Uploaded file storage |

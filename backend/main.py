@@ -31,8 +31,8 @@ def _maybe_migrate_chroma() -> None:
             return  # empty — nothing to migrate
 
         result = collection.get(limit=1, include=["embeddings"])
-        embeddings = result.get("embeddings") or []
-        if not embeddings:
+        embeddings = result.get("embeddings")
+        if embeddings is None or len(embeddings) == 0:
             return
 
         dim = len(embeddings[0])

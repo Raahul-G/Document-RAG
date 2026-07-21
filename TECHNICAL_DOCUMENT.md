@@ -2,9 +2,9 @@
 # Document-RAG: Technical Design Document
 
 **Project**: Document-RAG
-**Version**: Milestone 8
+**Version**: Milestone 9
 **Author**: Raahul G
-**Date**: June 2026
+**Date**: July 2026
 
 ---
 
@@ -18,21 +18,22 @@
 6. [The RAG Retrieval System](#6-the-rag-retrieval-system)
    - 6.1 [Embedding & Vector Search](#61-embedding--vector-search)
    - 6.2 [BM25 Keyword Search](#62-bm25-keyword-search)
-   - 6.3 [Hybrid Merge & Deduplication](#63-hybrid-merge--deduplication)
-   - 6.4 [Gate 1 — Coverage Check](#64-gate-1--coverage-check)
+   - 6.3 [Gate 1 — Coverage Check](#63-gate-1--coverage-check)
+   - 6.4 [Hybrid Merge & Deduplication](#64-hybrid-merge--deduplication)
    - 6.5 [Cross-Encoder Reranking](#65-cross-encoder-reranking)
    - 6.6 [Combined Scoring](#66-combined-scoring)
    - 6.7 [Dynamic Chunk Selection](#67-dynamic-chunk-selection)
 7. [Answer Generation](#7-answer-generation)
 8. [Local LLM — Phi-4-mini via llama-cpp-python](#8-local-llm--phi-4-mini-via-llama-cpp-python)
-9. [Conversation Memory & Query Rewriting](#9-conversation-memory--query-rewriting)
-10. [Snippet Rendering & Highlighting](#10-snippet-rendering--highlighting)
-11. [Streaming Architecture](#11-streaming-architecture)
-12. [Frontend Architecture](#12-frontend-architecture)
-13. [API Reference](#13-api-reference)
-14. [End-to-End Flow](#14-end-to-end-flow)
-15. [Performance Characteristics](#15-performance-characteristics)
-16. [Configuration & Environment](#16-configuration--environment)
+9. [Startup Sequence & Migration Guard](#9-startup-sequence--migration-guard)
+10. [Conversation Memory & Query Rewriting](#10-conversation-memory--query-rewriting)
+11. [Snippet Rendering & Highlighting](#11-snippet-rendering--highlighting)
+12. [Streaming Architecture](#12-streaming-architecture)
+13. [Frontend Architecture](#13-frontend-architecture)
+14. [API Reference](#14-api-reference)
+15. [End-to-End Flow](#15-end-to-end-flow)
+16. [Performance Characteristics](#16-performance-characteristics)
+17. [Configuration & Environment](#17-configuration--environment)
 
 ---
 
@@ -44,7 +45,7 @@ The system is designed around four core principles:
 
 - **Precision over recall at generation time** — only genuinely relevant chunks reach the LLM, not a fixed five chunks regardless of quality.
 - **Transparency** — every answer includes source citations that link back to the exact PDF page with a yellow highlight showing the cited passage.
-- **Fully local** — embeddings, vector storage, BM25, reranking, and answer generation all run in-process. No data leaves the machine and no API key is required.
+- **Fully local** — embeddings, vector storage, BM25, reranking, and answer generation all run in-process with no PyTorch dependency. No data leaves the machine and no API key is required.
 - **Coherent multi-turn conversation** — session history is persisted in SQLite and used to rewrite anaphoric queries before retrieval, ensuring follow-up questions like "What about Germany?" retrieve the right passages even when the entity was only named in a prior turn.
 
 ---
@@ -72,10 +73,10 @@ The system is designed around four core principles:
 │  │  Parse PDF/DOCX             Load history         │   │
 │  │  Detect headings            Rewrite query        │   │
 │  │  Chunk (overlap)            Embed query          │   │
-│  │  Embed chunks               Vector search        │   │
+│  │  Embed chunks (ONNX)        Vector search        │   │
 │  │  Store in ChromaDB          BM25 search          │   │
-│  │  Store in SQLite            Merge + dedupe       │   │
-│  │  Rebuild BM25               Gate 1 check         │   │
+│  │  Store in SQLite            Gate 1 check         │   │
+│  │  Rebuild BM25 + pickle      Merge + dedupe       │   │
 │  │                             Cross-encoder rank   │   │
 │  │                             Dynamic selection    │   │
 │  │                                                  │   │
@@ -105,10 +106,11 @@ The system is designed around four core principles:
 | ASGI server | Uvicorn (standard) | ≥ 0.32 | HTTP server |
 | Relational DB | SQLite + SQLAlchemy | ≥ 2.0 | Document & session metadata |
 | Vector store | ChromaDB | ≥ 1.5.7 | Persistent semantic index |
-| Embeddings | sentence-transformers | ≥ 5.4.1 | nomic-embed-text-v1.5 |
-| Cross-encoder | sentence-transformers | ≥ 5.4.1 | ms-marco-MiniLM-L-6-v2 |
-| Keyword search | rank-bm25 | ≥ 0.2.2 | In-memory BM25Okapi |
-| PDF parsing | PyMuPDF (fitz) | ≥ 1.27 | Text extraction + rendering |
+| Embeddings | fastembed | ≥ 0.3.6 | nomic-embed-text-v1.5 (ONNX int8) |
+| Cross-encoder | fastembed | ≥ 0.3.6 | Xenova/ms-marco-MiniLM-L-6-v2 (ONNX) |
+| Keyword search | rank-bm25 | ≥ 0.2.2 | BM25Okapi, pickle-persisted |
+| PDF parsing | opendataloader-pdf | ≥ latest | Layout-aware text + table + list extraction (Java, CPU) |
+| PDF rendering | PyMuPDF (fitz) | ≥ 1.27 | Snippet viewer: page → PNG + highlight annotation |
 | DOCX parsing | python-docx | ≥ 1.2 | Paragraph / style extraction |
 | LLM runtime | llama-cpp-python | ≥ 0.3.0 | Local GGUF model inference |
 | LLM model | Phi-4-mini-instruct Q4_K_M | 3.8B / ~2.5 GB | Answer generation (fully local) |
@@ -120,20 +122,20 @@ The system is designed around four core principles:
 | Component | Library | Version | Purpose |
 |---|---|---|---|
 | UI framework | React | 19.2 | Component-based interface |
-| Build tool | Vite | 8.0 | HMR dev server + bundle |
+| Build tool | Vite | 6.x | HMR dev server + bundle |
 | CSS | Tailwind CSS | 4.2 | Utility-first styling |
 | Icons | Material Symbols | (CDN) | Icon set |
 | Portal | react-dom/createPortal | 19.2 | Snippet modal outside DOM tree |
 
 ### Embedding, Reranking & Generation Models
 
-| Model | Params | Size | Purpose |
-|---|---|---|---|
-| nomic-ai/nomic-embed-text-v1.5 | ~137M | ~550 MB | Semantic embeddings |
-| cross-encoder/ms-marco-MiniLM-L-6-v2 | ~22M | ~85 MB | Passage relevance logits |
-| microsoft/Phi-4-mini-instruct Q4_K_M | 3.8B | ~2.5 GB | Local answer generation |
+| Model | Params | Runtime | Size on Disk | Purpose |
+|---|---|---|---|---|
+| nomic-ai/nomic-embed-text-v1.5 | ~137M | FastEmbed ONNX int8 | ~270 MB | Semantic embeddings (768-dim) |
+| Xenova/ms-marco-MiniLM-L-6-v2 | ~22M | FastEmbed ONNX | ~23 MB | Passage relevance logits |
+| microsoft/Phi-4-mini-instruct Q4_K_M | 3.8B | llama-cpp-python | ~2.5 GB | Local answer generation |
 
-All models run locally. The embedding and reranking models are downloaded via sentence-transformers on first use and cached. The Phi-4-mini GGUF file is downloaded once via `huggingface-cli` and placed in `./models/`.
+All models run locally. **PyTorch is not a dependency.** The embedding and reranking models are downloaded by FastEmbed at first use (or at Docker build time via pre-download scripts) and cached under `~/.cache/fastembed`. The Phi-4-mini GGUF file is downloaded once via `huggingface-cli` and placed in `./models/`. OpenDataLoader PDF requires **Java 11+** as a system dependency (JRE, not JDK); it is already present on the host for local dev and added via `apt-get` in the Dockerfile.
 
 ---
 
@@ -179,7 +181,7 @@ Message
 ### 4.2 ChromaDB Collection
 
 - **Name**: `document_chunks`
-- **Distance metric**: Cosine similarity
+- **Distance metric**: Cosine similarity (`hnsw:space: cosine`)
 - **Persistence**: `./data/chroma` (survives restart)
 - **Schema per entry**:
   ```
@@ -188,6 +190,12 @@ Message
   document:  chunk text
   metadata:  { doc_id, doc_name, page_number, passage_index, section_title }
   ```
+
+### 4.3 BM25 Pickle
+
+- **Path**: `BM25_PKL_PATH` env var (default `data/bm25.pkl`)
+- **Format**: `{ "index": BM25Okapi, "corpus": list[{text, metadata}] }`
+- **Lifecycle**: Loaded from disk at startup (~50ms); rebuilt and re-persisted after every ingestion or deletion.
 
 ---
 
@@ -210,12 +218,15 @@ Upload (POST /api/documents/upload)
   │  1. PARSE                               │
   │                                         │
   │  PDF path:                              │
-  │    PyMuPDF → blocks with font metrics   │
-  │    Heading heuristic:                   │
-  │      font_size ≥ 13.0 pt               │
-  │      len(text) < 200 chars             │
-  │      no trailing period                 │
-  │    → list[{page, text, category}]       │
+  │    OpenDataLoader PDF (Java, CPU)       │
+  │    → structured JSON element tree      │
+  │    heading (level ≤ 6) → "Title"       │
+  │    heading (level > 6) → "NarrativeText│
+  │    paragraph / caption → "NarrativeText│
+  │    list → one entry per list item      │
+  │    table → rows flattened "c1 | c2"    │
+  │    image → skipped                     │
+  │    → list[{page, text, category}]      │
   │                                         │
   │  DOCX path:                             │
   │    python-docx → paragraphs             │
@@ -229,9 +240,9 @@ Upload (POST /api/documents/upload)
   ┌─────────────────────────────────────────┐
   │  2. CHUNK                               │
   │                                         │
-  │  MAX_CHUNK_CHARS = 1500                 │
-  │  OVERLAP_CHARS   = 250                  │
-  │  MIN_SECTION_CHARS = 150               │
+  │  MAX_CHUNK_CHARS   = 1000               │
+  │  OVERLAP_CHARS     = 150  (~15%)        │
+  │  MIN_SECTION_CHARS = 150                │
   │                                         │
   │  Group elements by section heading.     │
   │  When section text > MAX_CHUNK_CHARS:   │
@@ -251,10 +262,11 @@ Upload (POST /api/documents/upload)
   ┌─────────────────────────────────────────┐
   │  3. EMBED                               │
   │                                         │
-  │  Model: nomic-embed-text-v1.5           │
+  │  Model: nomic-ai/nomic-embed-text-v1.5  │
+  │  Runtime: FastEmbed ONNX int8           │
+  │  BATCH_SIZE = 8                         │
   │  Each chunk prefixed:                   │
   │    "search_document: " + chunk_text     │
-  │  normalize_embeddings = True            │
   │  Output: float32[N_chunks × 768]        │
   └─────────────────────────────────────────┘
        │
@@ -273,11 +285,22 @@ Upload (POST /api/documents/upload)
   │  Fetch all chunks from ChromaDB         │
   │  Tokenize: strip punctuation, lowercase │
   │  Initialize BM25Okapi on full corpus    │
+  │  Persist to BM25_PKL_PATH (pickle)      │
   └─────────────────────────────────────────┘
        │
        ▼
   Mark Document status = "indexed"
 ```
+
+### Parsing Design Detail
+
+**Heading detection (PDF)**: OpenDataLoader assigns each heading element a structural `heading_level` (1–11) derived from the PDF's tag tree, not from visual font metrics. Levels 1–6 map to `"Title"` (genuine section headings); levels 7–11 are typically sub-sub labels that function as body text in context and are emitted as `"NarrativeText"`. This eliminates the previous font-size heuristic (≥ 14pt) which misfired on large body text and produced no headings at all for scanned PDFs.
+
+**Table flattening**: Each table row is serialised as `"cell1 | cell2 | cell3"` and the whole table is kept as one `"NarrativeText"` element. This preserves the column relationships that matter for embedding (e.g. voltage thresholds paired with clearance distances) without fragmenting cell values across multiple unrelated chunks.
+
+**Lists**: Each list item's `content` field is emitted as a separate `"NarrativeText"` element with its own `page number`. Nested sub-items are recursed into via the `kids` array.
+
+**Scanned PDFs**: OpenDataLoader has built-in OCR (80+ languages). No separate OCR step or model download is needed — scanned and text-based PDFs go through the same code path.
 
 ### Chunking Design Detail
 
@@ -289,18 +312,20 @@ The chunker avoids two common failure modes:
 
 **Small section carry-forward**: A section with less than `MIN_SECTION_CHARS` characters is not flushed as a standalone chunk (which would produce a near-empty retrieval unit). Instead its text is prepended to the next section's accumulation buffer, keeping context together.
 
+**Batch size**: Embedding runs in batches of 8 to bound peak RAM while reporting per-batch progress. The ONNX int8 model is ~2× more memory-efficient than a float32 PyTorch model, but batching still keeps the process footprint predictable across varying corpus sizes.
+
 ---
 
 ## 6. The RAG Retrieval System
 
-The retrieval system is the core of the product. It runs a nine-step hybrid pipeline on every query and returns between 1 and 5 chunks. Retrieval always operates on the **rewritten query** (see Section 9), not the raw user question — this ensures anaphoric follow-ups retrieve the right passages.
+The retrieval system is the core of the product. It runs a nine-step hybrid pipeline on every query and returns between 1 and 5 chunks. Retrieval always operates on the **rewritten query** (see Section 10), not the raw user question — this ensures anaphoric follow-ups retrieve the right passages.
 
 ```
 retrieve(query, doc_ids=None)
 │
-├─ 1. Embed query  (nomic, "search_query: " prefix)
+├─ 1. Embed query  (nomic, "search_query: " prefix, ONNX int8)
 │
-├─ 2. Vector search  (ChromaDB, top 15)
+├─ 2. Vector search  (ChromaDB cosine, top 15)
 │
 ├─ 3. BM25 search  (in-memory, top 15)
 │
@@ -308,9 +333,9 @@ retrieve(query, doc_ids=None)
 │
 ├─ 5. Merge + deduplicate  (by doc_id / page / passage_index)
 │
-├─ 6. Cross-encoder scoring  (ms-marco, sigmoid probabilities)
+├─ 6. Cross-encoder scoring  (Xenova ONNX, sigmoid probabilities)
 │
-├─ 7. Fallback  (bypass reranker if max CE prob < 0.10)
+├─ 7. Fallback  (bypass reranker if max CE prob < 0.15)
 │
 ├─ 8. Combined score  (weighted sum)
 │
@@ -319,19 +344,21 @@ retrieve(query, doc_ids=None)
 
 ### 6.1 Embedding & Vector Search
 
-The query is embedded with the **nomic-embed-text-v1.5** model using the `"search_query: "` prefix — the model was trained with asymmetric prefixes: documents use `"search_document: "` and queries use `"search_query: "`, optimising the vector space for retrieval rather than similarity.
+The query is embedded with the **nomic-embed-text-v1.5** model using the `"search_query: "` prefix — the model was trained with asymmetric prefixes: documents use `"search_document: "` and queries use `"search_query: "`, optimising the vector space for retrieval rather than similarity. Omitting the prefix measurably lowers recall.
+
+FastEmbed runs the ONNX int8-quantized model via `onnxruntime`, with no PyTorch in the call path. The model is lazy-loaded on first use and reused via a global singleton.
 
 ChromaDB performs cosine nearest-neighbour search, returning the top 15 results. Each result carries a score of `1 - cosine_distance`, so higher is more similar.
 
 ```python
 HYBRID_CANDIDATES = 15
-query_vec = embed_query(query)   # "search_query: " + query
+query_vec = embed_query(query)   # "search_query: " + query, FastEmbed ONNX
 vector_results = chroma.query(query_vec, n_results=15, doc_ids=doc_ids)
 ```
 
 ### 6.2 BM25 Keyword Search
 
-BM25 (Best Match 25) is a classical term-frequency/inverse-document-frequency ranking function that captures exact and near-exact keyword matches the vector model may miss (product codes, proper nouns, rare technical terms).
+BM25 (Best Match 25) is a classical term-frequency/inverse-document-frequency ranking function that captures exact and near-exact keyword matches the vector model may miss (product codes, proper nouns, version numbers, rare technical terms).
 
 The implementation uses **BM25Okapi** — the Okapi variant which applies a saturation function to term frequency, preventing a single very frequent term from dominating the score.
 
@@ -342,9 +369,23 @@ def _tokenize(text: str) -> list[str]:
     return re.sub(r"[^\w\s]", " ", text).lower().split()
 ```
 
-The index is in-memory and rebuilt after every ingestion or deletion. Scores are normalised to `[0, 1]` at query time by dividing by the maximum score in the result set.
+The in-memory index is loaded from pickle on startup and rebuilt + re-persisted after every ingestion or deletion. Loading from pickle takes ~50ms compared to 30–60s for a full rebuild from ChromaDB on a large corpus.
 
-### 6.3 Hybrid Merge & Deduplication
+### 6.3 Gate 1 — Coverage Check
+
+Before incurring cross-encoder cost, a lightweight coverage check rejects queries the corpus clearly cannot answer:
+
+| Condition | Action |
+|---|---|
+| Zero results from both sources | Return `([], False)` |
+| `top_vector_sim < 0.35` AND `bm25_hits == 0` | Return `([], False)` |
+| Any other combination | Pass — continue pipeline |
+
+`coverage_ok = False` is the signal for the router to return "not found" without calling the LLM at all, saving latency.
+
+The threshold `0.35` is calibrated for the **nomic-embed-text-v1.5** model, which produces higher baseline cosine similarities than smaller models like all-MiniLM-L6-v2 (which returned scores in the 0.15–0.45 range). With nomic, genuine off-topic queries land around 0.20–0.30, and the gate only fires when both the vector signal is weak and BM25 finds nothing — a reliable double-failure signal.
+
+### 6.4 Hybrid Merge & Deduplication
 
 Chunks from both sources are merged into a single dictionary keyed by their unique identity:
 
@@ -362,20 +403,6 @@ merged[key] = {
 }
 ```
 
-### 6.4 Gate 1 — Coverage Check
-
-Before incurring cross-encoder cost, a lightweight coverage check rejects queries the corpus clearly cannot answer:
-
-| Condition | Action |
-|---|---|
-| Zero results from both sources | Return `([], False)` |
-| `top_vector_sim < 0.25` AND `bm25_hits == 0` | Return `([], False)` |
-| Any other combination | Pass — continue pipeline |
-
-`coverage_ok = False` is the signal for the router to return "not found" without calling the LLM at all, saving latency.
-
-The threshold `0.25` is deliberately permissive — it only blocks genuinely off-topic queries (e.g. asking about cooking recipes when the corpus is a software manual). Everything else is passed to the cross-encoder and ultimately to the LLM's own judgement (Gate 2).
-
 ### 6.5 Cross-Encoder Reranking
 
 A **cross-encoder** differs from the embedding model in a fundamental way:
@@ -383,11 +410,11 @@ A **cross-encoder** differs from the embedding model in a fundamental way:
 - **Bi-encoder** (what generates embeddings): encodes query and document independently, then compares vectors. Fast, scalable, but the two representations never interact.
 - **Cross-encoder**: takes the `[query, document]` pair together as a single input and produces a single relevance score. Slower, but far more accurate because the model can attend to exact token overlaps, negations, and entity references.
 
-The model used is **ms-marco-MiniLM-L-6-v2**, a 22M-parameter distilled model trained on the MS-MARCO passage ranking dataset. It outputs raw logits (unbounded real numbers).
+The model used is **Xenova/ms-marco-MiniLM-L-6-v2** — an ONNX export of the widely used `cross-encoder/ms-marco-MiniLM-L-6-v2` (22M parameters, trained on MS-MARCO passage ranking). The ONNX export uses the exact same weights; only the runtime changes from PyTorch to `onnxruntime` via FastEmbed's `TextCrossEncoder`. Raw logits are produced in the same numerical range as the original model.
 
 ```python
-pairs = [[query, chunk["text"]] for chunk in candidates]
-raw_scores = reranker.predict(pairs)
+reranker = TextCrossEncoder(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
+raw_scores = list(reranker.rerank(query=query, documents=[c["text"] for c in candidates]))
 ```
 
 Logits are converted to `[0, 1]` probabilities via sigmoid with numerical clipping to prevent overflow:
@@ -397,10 +424,10 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, x))))
 ```
 
-**Fallback**: If the maximum CE probability across all candidates is below `0.10`, the reranker is considered confused (this happens when a query is syntactically valid but semantically far from all passages). In this case all `ce_prob` values are zeroed out, and the combined score degrades gracefully to pure hybrid retrieval order.
+**Fallback**: If the maximum CE probability across all candidates is below `0.15`, the reranker is considered confused (this happens when a query is syntactically valid but semantically distant from all passages). In this case all `ce_prob` values are zeroed out, and the combined score degrades gracefully to pure hybrid retrieval order.
 
 ```python
-if max_ce_prob < FALLBACK_CE_PROB_MIN:
+if max_ce_prob < FALLBACK_CE_PROB_MIN:   # FALLBACK_CE_PROB_MIN = 0.15
     for chunk in candidates:
         chunk["ce_prob"] = 0.0
 ```
@@ -484,7 +511,7 @@ Revenue for FY2024 was $4.2 billion...
 QUESTION: What was the revenue growth in FY2024?
 ```
 
-Conversation history (max 5 prior turns) is prepended with an explicit instruction that it is context-only and must not be used as a factual source. See Section 9 for how history is also used to rewrite the query before retrieval.
+Conversation history (max 5 prior turns) is prepended with an explicit instruction that it is context-only and must not be used as a factual source. See Section 10 for how history is also used to rewrite the query before retrieval.
 
 ### 7.2 LLM Instruction
 
@@ -515,7 +542,7 @@ for src in result.get("sources", []):
         src["text"] = _chunk_text_by_key[key]  # overwrite with original
 ```
 
-This ensures the text stored in the database and returned to the frontend is always the verbatim indexed chunk — matching what physically exists in the PDF.
+This ensures the text stored in the database and returned to the frontend is always the verbatim indexed chunk — matching what physically exists in the PDF. Sources whose key does not match any retrieved chunk (e.g. hallucinated citations) are left unchanged.
 
 ---
 
@@ -529,8 +556,8 @@ The system uses **Phi-4-mini-instruct** (Microsoft, 3.8B parameters) quantised t
 |---|---|
 | Parameters | 3.8B |
 | File size | ~2.5 GB |
-| RAM at runtime | ~5 GB (model + KV cache at 8k context) |
-| Context window | 128,000 tokens |
+| RAM at runtime | ~3.5–4 GB (model weights + KV cache at 8k context) |
+| Context window | 8,192 tokens (default; configurable up to 128k) |
 | Quantisation | Q4_K_M (4-bit mixed, K-quant) |
 
 **Why Phi-4-mini over alternatives:**
@@ -544,8 +571,8 @@ Phi-4-mini's training emphasis on structured and tabular data reasoning makes it
 
 **One-time model download:**
 ```bash
-uv run hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
-  --include "microsoft_microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
+huggingface-cli download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+  --include "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
   --local-dir ./models/
 ```
 
@@ -561,15 +588,15 @@ def _get_llm() -> Llama:
     if _llm is None:
         _llm = Llama(
             model_path=settings.llm_model_path,
-            n_ctx=settings.llm_n_ctx,       # default 8192
-            n_threads=settings.llm_n_threads, # default 4
+            n_ctx=settings.llm_n_ctx,           # default 8192
+            n_threads=settings.llm_n_threads,   # default 4
             n_gpu_layers=settings.llm_n_gpu_layers,  # 0 = CPU, -1 = all GPU
             verbose=False,
         )
     return _llm
 ```
 
-The model is loaded on first request. To eliminate cold-start latency on the first user query, the FastAPI `lifespan` function can call `_get_llm()` at startup.
+The model is loaded at **server startup** via the FastAPI `lifespan` warmup (if the model file exists), so the first user query has no cold-start delay. A `/api/system/status` endpoint exposes `{ "llm_ready": bool }` which the frontend polls to show a loading screen before the LLM is ready.
 
 No sidecar process (Ollama, vllm, etc.) is required. The model runs in the same process as the rest of the application, which simplifies both local development and Docker deployment.
 
@@ -591,7 +618,7 @@ response = llm.create_chat_completion(
 
 Under grammar constraints, the sampler masks out any token that would violate the schema at the current position. The model cannot produce a stray comma, a missing brace, or an unexpected field. This eliminates an entire class of parse failures.
 
-**Important**: grammar constraints and `stream=True` cannot be used simultaneously in llama-cpp-python. The streaming path therefore does not use grammar constraints and instead uses the NOT_FOUND sentinel approach (see Section 11.2).
+**Important**: grammar constraints and `stream=True` cannot be used simultaneously in llama-cpp-python. The streaming path therefore does not use grammar constraints and instead uses the NOT_FOUND sentinel approach (see Section 12.2).
 
 ### 8.4 JSON Repair Fallback
 
@@ -633,26 +660,91 @@ The `LLM_N_GPU_LAYERS` setting controls how many transformer layers are offloade
 | `N` | Offload N layers to GPU (partial GPU) |
 | `-1` | Offload all layers (full GPU) |
 
-With a GPU that has ≥ 6 GB VRAM, setting `LLM_N_GPU_LAYERS=-1` reduces generation latency from ~30–60 s to ~2–5 s for a full response.
+With a GPU that has ≥ 6 GB VRAM, setting `LLM_N_GPU_LAYERS=-1` reduces generation latency from ~30–60s to ~2–5s for a full response.
 
 ### 8.6 RAM Budget
 
 | Component | RAM |
 |---|---|
-| nomic-embed-text-v1.5 | ~550 MB |
-| ms-marco-MiniLM-L-6-v2 | ~85 MB |
-| Phi-4-mini Q4_K_M (CPU) | ~5 GB |
-| ChromaDB (10k chunks) | ~200 MB |
-| BM25 index (10k chunks) | ~50 MB |
-| **Total (CPU, 10k chunks)** | **~6 GB** |
+| nomic-embed-text-v1.5 (ONNX int8) | ~270 MB |
+| Xenova/ms-marco-MiniLM-L-6-v2 (ONNX) | ~23 MB |
+| Phi-4-mini Q4_K_M (CPU, 8k context) | ~3.5–4 GB |
+| ChromaDB (10k chunks, in-process) | ~200 MB |
+| BM25 index (10k chunks, in-memory) | ~50 MB |
+| **Total (CPU, 10k chunks)** | **~4.5 GB** |
 
-An 8 GB machine is sufficient for CPU-only operation with a moderate corpus. A 16 GB machine or a GPU with ≥ 6 GB VRAM is recommended for comfortable headroom.
+An 8 GB machine is comfortable for CPU-only operation with a moderate corpus. A GPU with ≥ 6 GB VRAM brings generation latency down to 2–5s per response.
 
 ---
 
-## 9. Conversation Memory & Query Rewriting
+## 9. Startup Sequence & Migration Guard
 
-### 9.1 Session Persistence
+### 9.1 Lifespan Order
+
+The FastAPI `lifespan` function executes five ordered steps before the server accepts requests:
+
+```
+1. Create directories: uploads/, data/chroma/, data/
+   Create SQLAlchemy tables (idempotent)
+
+2. Migration guard — probes ChromaDB for stale embedding dimensions
+   ↳ Must complete before any BM25 or vector reads
+
+3. BM25 load-or-build
+   ├─ load_index() succeeds (pickle valid)  → done in ~50ms
+   └─ load_index() fails (no pickle / corrupt)
+       → get_all_chunks() from ChromaDB
+       → build_index(chunks)               → ~1–60s depending on corpus size
+
+4. LLM warmup
+   ├─ Model file exists → _get_llm() (loads ~3.5 GB into RAM)
+   └─ File missing     → skip, warn, set llm_ready=False
+
+5. Yield (server ready, llm_ready=True)
+```
+
+### 9.2 Embedding Dimension Migration Guard
+
+When the embedding model changes (e.g. from `all-MiniLM-L6-v2` at 384 dimensions to `nomic-embed-text-v1.5` at 768 dimensions), the existing ChromaDB vectors are incompatible with the new query embeddings. Cosine similarity comparisons between 384-dim stored vectors and 768-dim query vectors silently return wrong scores, causing Gate 1 to fail on all queries.
+
+The migration guard detects this automatically:
+
+```python
+def _maybe_migrate_chroma() -> None:
+    collection = vectorstore.get_collection()
+    if collection.count() == 0:
+        return  # empty — nothing to migrate
+
+    result = collection.get(limit=1, include=["embeddings"])
+    embeddings = result.get("embeddings") or []
+    if not embeddings:
+        return
+
+    dim = len(embeddings[0])
+    if dim == 768:
+        return  # correct dimension — pass
+
+    # Stale dimension detected — clear everything before BM25 loads
+    vectorstore.reset_collection()   # delete + recreate ChromaDB collection
+    bm25_index.invalidate_pickle()   # remove bm25.pkl
+
+    db = SessionLocal()
+    db.query(Chunk).delete()
+    db.commit()
+    db.close()
+```
+
+After clearing, the server starts with an empty corpus. The user re-ingests documents through the UI and all new embeddings are at 768 dimensions. The guard only fires once and is harmless on subsequent restarts (empty or correct-dimension collection).
+
+### 9.3 BM25 Pickle Invalidation
+
+The migration guard calls `bm25_index.invalidate_pickle()` **before** the BM25 load step runs. If it did not, the BM25 load would succeed (the pickle is still on disk), but the BM25 corpus would reference `doc_id` values that no longer exist in SQLite (since `Chunk` rows were deleted). The enforced order prevents this inconsistency.
+
+---
+
+## 10. Conversation Memory & Query Rewriting
+
+### 10.1 Session Persistence
 
 Every conversation belongs to a **Session**. Sessions and their messages are persisted in SQLite, so chat history survives server restarts. Each session is created automatically on the first question and titled from its first 60 characters.
 
@@ -683,7 +775,7 @@ history = [
 ]
 ```
 
-### 9.2 The Two-Layer Memory Problem
+### 10.2 The Two-Layer Memory Problem
 
 A naive multi-turn RAG system passes history only to the answer generator. This creates a split: the LLM sees the context and can resolve pronouns in its *answer*, but retrieval runs on the raw question and retrieves the wrong passages.
 
@@ -698,7 +790,7 @@ Naive retrieval query → "What about Germany?"
 
 The system addresses this with a dedicated **query rewriting** step that runs before retrieval on every turn where history is available.
 
-### 9.3 Query Rewriting
+### 10.3 Query Rewriting
 
 `rewrite_query(question, history)` calls the local LLM with a focused prompt to produce a fully self-contained query. It uses the same model instance (`_get_llm()`) but with a small token budget (`max_tokens=128`) to keep the overhead minimal.
 
@@ -732,7 +824,7 @@ Rewritten query:
 
 This rewritten query is then passed to `retrieval.retrieve()`, which now searches for a semantically rich, self-contained phrase.
 
-### 9.4 Information Separation
+### 10.4 Information Separation
 
 A critical design constraint: the rewritten query is used **only for retrieval**. Answer generation always receives the **original question** and the full history:
 
@@ -743,21 +835,17 @@ generate_answer(original_question, chunks, history)  ← LLM gets full context
 
 This separation prevents the rewrite from corrupting the conversational tone of the answer. If the user asked "What about Germany?", the LLM answers that question — not the expanded version — using the correctly retrieved passages.
 
-### 9.5 Execution Order
+### 10.5 Execution Order
 
-The query flow was restructured so history is loaded before retrieval:
+The query flow was structured so history is loaded before retrieval:
 
 ```
-Old order:
-  retrieve(raw_q) → gate1 → load_history → generate(raw_q, history)
-
-New order:
-  load_history → rewrite(raw_q, history) → retrieve(rewritten_q) → generate(raw_q, history)
+load_history → rewrite(raw_q, history) → retrieve(rewritten_q) → generate(raw_q, history)
 ```
 
 Both the non-streaming (`POST /api/query`) and streaming (`POST /api/query/stream`) endpoints follow this order.
 
-### 9.6 Graceful Degradation
+### 10.6 Graceful Degradation
 
 `rewrite_query` is designed to never break the pipeline:
 
@@ -770,7 +858,7 @@ Both the non-streaming (`POST /api/query`) and streaming (`POST /api/query/strea
 
 The rewriter failing is equivalent to the old behaviour — retrieval proceeds on the raw question. Answers may be less accurate for anaphoric queries, but the system never errors out.
 
-### 9.7 History in Answer Generation
+### 10.7 History in Answer Generation
 
 In addition to retrieval, history is passed to the generation LLM in a labelled block:
 
@@ -790,11 +878,11 @@ The system prompt instructs the model that this block is context only — it res
 
 ---
 
-## 10. Snippet Rendering & Highlighting
+## 11. Snippet Rendering & Highlighting
 
 When a user clicks a citation pill, the backend renders the exact PDF page as a PNG with the cited passage highlighted in yellow.
 
-### 10.1 Architecture
+### 11.1 Architecture
 
 ```
 GET /api/snippets/render
@@ -822,7 +910,7 @@ GET /api/snippets/render
   Cache-Control: max-age=3600
 ```
 
-### 10.2 Text Search on a PDF Page
+### 11.2 Text Search on a PDF Page
 
 The central challenge is locating a text passage inside a PDF page's word list. PDFs do not store text as plain strings — they store glyph streams, and text is reconstructed by the PDF reader. This introduces several obstacles:
 
@@ -846,7 +934,7 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 ```
 
-### 10.3 Start and End Anchor Search
+### 11.3 Start and End Anchor Search
 
 Instead of searching for the entire passage (which may span pages and be unreliable), the system identifies **start** and **end anchors** — short, reliable phrases extracted from the passage boundaries.
 
@@ -873,7 +961,7 @@ for page_offset in PAGE_SEARCH_WINDOW:
         break
 ```
 
-### 10.4 Y-Band Highlighting
+### 11.4 Y-Band Highlighting
 
 Once start and end anchors are located, their Y-coordinates define a horizontal band on the page. All PDF words whose bounding box falls within this band are collected and highlighted.
 
@@ -907,7 +995,7 @@ estimated_lines = len(passage_text) / _CHARS_PER_LINE
 end_y = start_y + (estimated_lines * median_line_height)
 ```
 
-### 10.5 Multi-Column Detection
+### 11.5 Multi-Column Detection
 
 Many PDF documents use two-column layouts. If the highlight band is applied naively, it may capture words from both columns even though the passage is in only one.
 
@@ -924,7 +1012,7 @@ is_single_column = any(
 - If any word crosses the centre: **single-column** — no filtering applied.
 - If no word crosses: **multi-column** — words are constrained to the column containing the start anchor (left half or right half of the page).
 
-### 10.6 Rendering
+### 11.6 Rendering
 
 PyMuPDF draws a yellow `Highlight` annotation over each word's bounding rectangle, then renders the page to a PNG at 1.5× resolution for readability:
 
@@ -939,7 +1027,7 @@ pix = page.get_pixmap(matrix=mat)
 return pix.tobytes("png")
 ```
 
-### 10.7 Caching
+### 11.7 Caching
 
 Rendered snippets are expensive (~500ms–2s). An LRU cache keyed on `(pdf_path, page, text)` stores up to 50 entries (~2.75 MB):
 
@@ -952,9 +1040,9 @@ The cache is invalidated when a document is deleted.
 
 ---
 
-## 11. Streaming Architecture
+## 12. Streaming Architecture
 
-### 11.1 Server-Sent Events (SSE)
+### 12.1 Server-Sent Events (SSE)
 
 The streaming endpoint uses SSE — a one-way HTTP persistent connection where the server pushes newline-delimited JSON events:
 
@@ -965,13 +1053,14 @@ POST /api/query/stream
 Response:
   Content-Type: text/event-stream
 
+data: {"type": "status", "status": "Generating answer..."}
 data: {"type": "token", "text": "Revenue "}
 data: {"type": "token", "text": "for FY2024 "}
 data: {"type": "token", "text": "was $4.2 billion."}
 data: {"type": "done", "found": true, "answer": "...", "sources": [...], "session_id": 7}
 ```
 
-### 11.2 NOT_FOUND Sentinel
+### 12.2 NOT_FOUND Sentinel
 
 The local LLM in streaming mode cannot use grammar constraints (streaming and `grammar=` are mutually exclusive in llama-cpp-python). Instead, the stream system prompt instructs the model to output the literal string `NOT_FOUND` if it cannot answer from the passages.
 
@@ -1000,7 +1089,7 @@ else:
         yield token_event(buffer)
 ```
 
-### 11.3 Gate 1 in Streaming Mode
+### 12.3 Gate 1 in Streaming Mode
 
 The retrieval gate check runs before the SSE stream opens. If Gate 1 fails (no coverage), the endpoint returns a single `"done"` event with `found=false` immediately — no LLM call is made:
 
@@ -1010,9 +1099,9 @@ data: {"type": "done", "found": false, "answer": "", "sources": [], "session_id"
 
 ---
 
-## 12. Frontend Architecture
+## 13. Frontend Architecture
 
-### 12.1 Component Tree
+### 13.1 Component Tree
 
 ```
 App
@@ -1023,12 +1112,12 @@ App
 │   ├─ Session list (max 10, with delete on hover)
 │   └─ Status indicator
 │
-└─ view === "chat"  → ChatInterface
+└─ view === "chat"   → ChatInterface
    view === "upload" → Upload + DocumentLibrary
    view === "settings" → Placeholder
 ```
 
-### 12.2 Streaming Message Handling
+### 13.2 Streaming Message Handling
 
 ```javascript
 const res = await fetch("/api/query/stream", { method: "POST", body: JSON.stringify(payload) })
@@ -1067,7 +1156,7 @@ while (true) {
 }
 ```
 
-### 12.3 Thinking Phase Animation
+### 13.3 Thinking Phase Animation
 
 While the streaming bubble exists but has no text yet (waiting for first token), four cycling states are shown with icons and animated dots:
 
@@ -1081,7 +1170,7 @@ const THINKING_PHASES = [
 // Phase advances every 1600ms via setInterval
 ```
 
-### 12.4 Snippet Modal
+### 13.4 Snippet Modal
 
 Clicking a citation pill opens a full-screen modal (via `createPortal` to `document.body`, ensuring correct z-index stacking regardless of parent DOM context):
 
@@ -1107,7 +1196,7 @@ The Copy Image button writes the PNG to the clipboard using the Clipboard API (f
 
 ---
 
-## 13. API Reference
+## 14. API Reference
 
 | Method | Path | Description |
 |---|---|---|
@@ -1122,10 +1211,11 @@ The Copy Image button writes the PNG to the clipboard using the Clipboard API (f
 | `GET` | `/api/sessions/{id}` | Session + messages |
 | `DELETE` | `/api/sessions/{id}` | Delete session |
 | `GET` | `/api/snippets/render` | Render PDF snippet as PNG |
+| `GET` | `/api/system/status` | `{ "llm_ready": bool }` |
 
 ---
 
-## 14. End-to-End Flow
+## 15. End-to-End Flow
 
 ### Upload Flow
 
@@ -1136,7 +1226,11 @@ User drops PDF
   → Save file to ./uploads
   → Insert Document (status=pending)
   → Background ingestion starts
-      → Parse → Chunk → Embed → Store → Rebuild BM25
+      → Parse (OpenDataLoader PDF: structural headings, tables, lists, OCR)
+      → Chunk (1000 chars, 150 overlap)
+      → Embed (FastEmbed ONNX, "search_document: " prefix, batch=8)
+      → Store (ChromaDB + SQLite)
+      → Rebuild BM25 + persist to pickle
   → SSE /api/documents/{id}/progress streams stages to UI
   → Frontend polls document list, shows "indexed" badge
 ```
@@ -1148,14 +1242,15 @@ User types question, hits Enter
   → POST /api/query/stream
   → load_history(session_id, max 5 turns)
   → rewrite_query(question, history)          ← anaphora resolved
-  → embed_query(rewritten_query)
+  → embed_query(rewritten_query)              ← "search_query: " prefix, ONNX
   → vector_search(query_vec, top 15)
   → bm25_search(rewritten_query, top 15)
-  → Gate 1 check
-  → merge + deduplicate
-  → cross_encoder_score(rewritten_query, candidates)
+  → Gate 1 check (top_vector_sim < 0.35 AND bm25_hits == 0 → reject)
+  → merge + deduplicate (by doc_id/page/passage_index)
+  → cross_encoder_score(rewritten_query, candidates) ← Xenova ONNX
+  → fallback if max_ce_prob < 0.15
   → combined_score = 0.5v + 0.3b + 0.2c
-  → dynamic_select (score ratio 0.5)
+  → dynamic_select (score ratio 0.5, cap 5)
   → stream Phi-4-mini (llama-cpp-python)      ← original question + history + chunks
   → buffer NOT_FOUND detection
   → SSE token events → frontend appends tokens
@@ -1187,7 +1282,7 @@ User clicks citation pill
 
 ---
 
-## 15. Performance Characteristics
+## 16. Performance Characteristics
 
 ### Query Latency Breakdown (CPU-only)
 
@@ -1195,10 +1290,10 @@ User clicks citation pill
 |---|---|
 | History load (SQLite) | < 5ms |
 | Query rewriting (Phi-4-mini, CPU) | 5–15s (first turn skipped) |
-| Query embedding (nomic) | 20–50ms |
+| Query embedding (nomic ONNX int8) | 10–30ms |
 | ChromaDB vector search (top 15) | 10–50ms |
 | BM25 search (in-memory, full corpus) | < 1ms |
-| Cross-encoder reranking (15–30 pairs) | 80–200ms |
+| Cross-encoder reranking (15–30 pairs, ONNX) | 50–150ms |
 | Phi-4-mini first token (CPU, streaming) | 10–20s |
 | Phi-4-mini full response (CPU) | 30–90s |
 | **Total to first token (CPU)** | **~10–20s** |
@@ -1209,25 +1304,26 @@ User clicks citation pill
 
 | Stage | Typical Rate |
 |---|---|
-| PDF parsing (PyMuPDF) | ~5–20 pages/sec |
-| Embedding (nomic, CPU) | ~100–200 chunks/sec |
+| PDF parsing (OpenDataLoader, local mode) | ~60 pages/sec |
+| Embedding (nomic ONNX int8, batch=8, CPU) | ~80–150 chunks/sec |
 | ChromaDB insert | ~500 chunks/sec |
+| BM25 pickle save | ~100ms for 10k chunks |
 
 ### Memory Footprint
 
 | Component | Memory |
 |---|---|
-| nomic-embed-text-v1.5 model | ~550 MB |
-| ms-marco-MiniLM-L-6-v2 model | ~85 MB |
-| Phi-4-mini Q4_K_M (CPU, 8k context) | ~5 GB |
+| nomic-embed-text-v1.5 (ONNX int8) | ~270 MB |
+| Xenova/ms-marco-MiniLM-L-6-v2 (ONNX) | ~23 MB |
+| Phi-4-mini Q4_K_M (CPU, 8k context) | ~3.5–4 GB |
 | ChromaDB (10k chunks, in-process) | ~200 MB |
-| BM25 index (10k chunks) | ~50 MB |
+| BM25 index (10k chunks, in-memory) | ~50 MB |
 | Snippet LRU cache (50 entries) | ~2.75 MB |
-| **Total (CPU, 10k chunks)** | **~6 GB** |
+| **Total (CPU, 10k chunks)** | **~4.5 GB** |
 
 ---
 
-## 16. Configuration & Environment
+## 17. Configuration & Environment
 
 ### Environment Variables (`.env`)
 
@@ -1244,6 +1340,7 @@ LLM_MAX_TOKENS=2048      # maximum tokens in response
 DATABASE_URL=sqlite:///./data/app.db     # optional, default shown
 CHROMA_PATH=./data/chroma                # optional, default shown
 UPLOAD_DIR=./uploads                     # optional, default shown
+BM25_PKL_PATH=data/bm25.pkl             # optional, default shown
 ```
 
 ### Directory Layout
@@ -1251,23 +1348,23 @@ UPLOAD_DIR=./uploads                     # optional, default shown
 ```
 Document-RAG/
 ├── backend/
-│   ├── main.py                  # FastAPI app, lifespan, routers
+│   ├── main.py                  # FastAPI app, lifespan (migration guard + BM25 load + LLM warmup)
 │   ├── config.py                # pydantic-settings config (LLM_* fields)
 │   ├── database.py              # SQLAlchemy engine + session
 │   ├── models.py                # ORM models (Document, Chunk, Session, Message)
 │   ├── routers/
 │   │   ├── documents.py         # upload, progress SSE, list, delete
-│   │   ├── query.py             # non-stream + stream Q&A, rewrite → retrieve order
+│   │   ├── query.py             # non-stream + stream Q&A, source text restoration
 │   │   ├── sessions.py          # session + message history
 │   │   └── snippets.py          # PDF snippet rendering
 │   ├── services/
-│   │   ├── ingestion.py         # parse → chunk → embed → store
-│   │   ├── retrieval.py         # hybrid retrieval pipeline
+│   │   ├── ingestion.py         # parse (OpenDataLoader PDF / python-docx) → chunk → embed → store
+│   │   ├── retrieval.py         # hybrid retrieval pipeline (vector + BM25 + CE reranking)
 │   │   ├── generation.py        # local LLM: rewrite_query, generate_answer, stream_answer
-│   │   ├── embeddings.py        # nomic embed_query / embed_documents
-│   │   ├── vectorstore.py       # ChromaDB wrapper
-│   │   ├── bm25_index.py        # BM25Okapi in-memory index
-│   │   └── snippet.py           # PDF page rendering + highlighting
+│   │   ├── embeddings.py        # FastEmbed ONNX: embed_query / embed_documents (nomic)
+│   │   ├── vectorstore.py       # ChromaDB wrapper + reset_collection()
+│   │   ├── bm25_index.py        # BM25Okapi index + pickle persistence
+│   │   └── snippet.py           # PDF page rendering + y-band highlighting
 │   └── tests/
 │       ├── test_generation.py   # rewrite_query, generate_answer unit tests
 │       ├── test_streaming.py    # stream_answer unit tests
@@ -1287,7 +1384,8 @@ Document-RAG/
 │   └── microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
 ├── data/                        # created at runtime
 │   ├── app.db                   # SQLite
-│   └── chroma/                  # ChromaDB persistence
+│   ├── chroma/                  # ChromaDB persistence
+│   └── bm25.pkl                 # BM25 index pickle
 ├── uploads/                     # created at runtime
 ├── pyproject.toml
 └── .env
@@ -1297,8 +1395,8 @@ Document-RAG/
 
 ```bash
 # Download model (one-time)
-uv run hf download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
-  --include "microsoft_microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
+huggingface-cli download bartowski/microsoft_Phi-4-mini-instruct-GGUF \
+  --include "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf" \
   --local-dir ./models/
 
 # Backend
@@ -1320,4 +1418,4 @@ The frontend dev server runs on `http://localhost:5173` and proxies `/api` reque
 docker compose up --build
 ```
 
-The compose file mounts `./models` as a read-only volume at `/models` inside the container. The `LLM_MODEL_PATH` env var is set to `/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf`.
+The compose file mounts the model via a named volume at `/models` inside the container. `LLM_MODEL_PATH` is set to `/models/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf`. FastEmbed models (nomic embedding + Xenova reranker) are downloaded into the image at build time via BuildKit cache mounts, so no internet access is required at container runtime.
