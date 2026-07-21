@@ -12,6 +12,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ cmake libgomp1 libffi-dev \
     libgl1 libglib2.0-0 \
+    default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -74,6 +75,7 @@ ENV LLM_N_THREADS=4
 ENV LLM_N_GPU_LAYERS=0
 ENV LLM_TEMPERATURE=0.0
 ENV LLM_MAX_TOKENS=2048
+ENV BM25_PKL_PATH=/data/bm25.pkl
 
 # Auto-create persistent volumes when run from Docker Desktop
 VOLUME ["/data", "/uploads", "/models"]
